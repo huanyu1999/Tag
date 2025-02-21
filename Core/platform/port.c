@@ -26,12 +26,12 @@ volatile        int32_t sys_time_diff = 0;
  * 		  CLOCKS_PER_SEC frequency.
  * 		  The resolution of time32_incr is usually 1/1000 sec.
  * */
-// __INLINE unsigned long
-// portGetTickCnt(void)
-unsigned long portGetTickCnt(void)
+__INLINE uint32_t
+portGetTickCnt(void)
+// unsigned long portGetTickCnt(void)
 {
-	return HAL_GetTick() - sys_time_diff;
-	//return HAL_GetTick();
+    // return HAL_GetTick() - sys_time_diff;
+    return HAL_GetTick();
 }
 
 

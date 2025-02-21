@@ -10,9 +10,9 @@
       <TargetName>Label</TargetName>
       <ToolsetNumber>0x4</ToolsetNumber>
       <ToolsetName>ARM-ADS</ToolsetName>
-      <pArmCC>6210000::V6.21::ARMCLANG</pArmCC>
-      <pCCUsed>6210000::V6.21::ARMCLANG</pCCUsed>
-      <uAC6>1</uAC6>
+      <pArmCC>5060960::V5.06 update 7 (build 960)::.\ARM_Compiler_5.06u7</pArmCC>
+      <pCCUsed>5060960::V5.06 update 7 (build 960)::.\ARM_Compiler_5.06u7</pCCUsed>
+      <uAC6>0</uAC6>
       <TargetOption>
         <TargetCommonOption>
           <Device>STM32F103CB</Device>
@@ -324,7 +324,7 @@
             <PlainCh>0</PlainCh>
             <Ropi>0</Ropi>
             <Rwpi>0</Rwpi>
-            <wLevel>3</wLevel>
+            <wLevel>2</wLevel>
             <uThumb>0</uThumb>
             <uSurpInc>0</uSurpInc>
             <uC99>1</uC99>
@@ -501,6 +501,21 @@
               <FileType>1</FileType>
               <FilePath>..\Core\application\instance_tag.c</FilePath>
             </File>
+            <File>
+              <FileName>instance_anch.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\application\instance_anch.c</FilePath>
+            </File>
+            <File>
+              <FileName>instance_calib.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\application\instance_calib.c</FilePath>
+            </File>
+            <File>
+              <FileName>instance_common.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\Core\application\instance_common.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -668,8 +683,8 @@
   <RTE>
     <apis/>
     <components>
-      <component Cclass="CMSIS" Cgroup="CORE" Cvendor="ARM" Cversion="6.1.0" condition="ARMv6_7_8-M Device">
-        <package name="CMSIS" schemaVersion="1.7.36" url="https://www.keil.com/pack/" vendor="ARM" version="6.1.0"/>
+      <component Cclass="CMSIS" Cgroup="CORE" Cvendor="ARM" Cversion="6.0.0" condition="ARMv6_7_8-M Device">
+        <package name="CMSIS" schemaVersion="1.7.7" url="https://www.keil.com/pack/" vendor="ARM" version="6.0.0"/>
         <targetInfos>
           <targetInfo name="Label"/>
         </targetInfos>

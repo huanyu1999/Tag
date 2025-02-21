@@ -48,7 +48,7 @@ uint8_t bee_flag = 1; //控制蜂鸣器
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-extern void dw_main(void);
+extern int dw_main(void);
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -95,10 +95,7 @@ int main(void)
     MX_SPI1_Init();
 //    MX_SPI2_Init();
     MX_TIM2_Init();
-    DW1000_init();
 
-
-    print_config();                     //打印系统参数信息
     /* USER CODE BEGIN 2 */
     dw_main();
     /* USER CODE END 2 */

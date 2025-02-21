@@ -1,453 +1,878 @@
+/*! ----------------------------------------------------------------------------
+ *  @file    instance_tag.c
+ *  @brief   Decawave tag application state machine for TREK demo
+ *
+ * @attention
+ *
+ * Copyright 2016 (c) Decawave Ltd, Dublin, Ireland.
+ *
+ * All rights reserved.
+ *
+ * @author Decawave
+ */
+#include "compiler.h"
+#include "port.h"
+#include "deca_device_api.h"
+#include "deca_spi.h"
+#include "deca_regs.h"
+
 #include "instance.h"
 
+// -------------------------------------------------------------------------------------------------------------------
+//      Data Definitions
+// -------------------------------------------------------------------------------------------------------------------
 
-/* poll数据帧格式 */
-static uint8_t tx_poll_msg[POLL_MSG_LEN] = {0x41, 0x88, 0, 0xCA, 0xDE, 0xFF, 0xFF, 0x00, 0x00, FUNC_CODE_POLL, 0x00, 0x00, 0x00, 0x00};
-/* final数据帧格式 */
-static uint8_t tx_final_msg[FIANL_MSG_LEN] = {0x41, 0x88, 0, 0xCA, 0xDE, 0xFF, 0xFF, 0x00, 0x00, FUNC_CODE_FINAL, 0X00};
-/* 接收数据buffer */
-static uint8_t rx_buffer[FRAME_LEN_MAX];
-
-static uint8_t resp_expect = MAX_AHCHOR_NUMBER;         //resp消息接收个数
-static int tagSleepCorrection_ms = 0;                   //标签时序校准，用于slot分配防冲突管理
-uint32_t volatile next_period_time = 0;                          //标签下次测距周期开始时间，用于防冲突管理
-uint8_t Correction_flag = 0;                            //该标签已经被时序校准的标志位
-
-/* TWR时间戳，用于计算飞行时间 */
-static uint64_t poll_tx_ts;                     
-static uint64_t resp_rx_ts[MAX_AHCHOR_NUMBER];
-static uint64_t final_tx_ts;
-
-/* 发送和接收数据中断标志 */
-static volatile uint8_t rx_status = RX_WAIT;
-static volatile uint8_t tx_status = TX_WAIT;
-
-static uint8_t resp_valid = 0x00;               //基站数据有效标志
-uint32 diff_time;                               //标签增加发起测距随机时间，避免冲突
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+// NOTE: the maximum RX timeout is ~ 65ms
+// !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 
-static uint8_t led_flag = 0;
-static uint32_t led_time = 0;     
+// -------------------------------------------------------------------------------------------------------------------
+// Functions
+// -------------------------------------------------------------------------------------------------------------------
 
-void tag_app(void)
+/**
+ * @brief this function either enables the receiver (delayed)
+ *
+ **/
+void tag_enable_rx(uint32 dlyTime)
 {
-    switch (state)
+    instance_data_t* inst = instance_get_local_structure_ptr(0);
+    //subtract preamble duration (because when instructing delayed TX the time is the time of SFD,
+    //however when doing delayed RX the time is RX on time)
+    dwt_setdelayedtrxtime(dlyTime - inst->preambleDuration32h) ;
+    if(dwt_rxenable(DWT_START_RX_DELAYED|DWT_IDLE_ON_DLY_ERR)) //delayed rx
     {
-        case STA_SEND_POLL:  //打包和发送poll消息
+        //if the delayed RX failed - time has passed - do immediate enable
+        //led_on(LED_PC9);
+        dwt_setpreambledetecttimeout(0); //clear preamble timeout as RX is turned on early/late
+        dwt_setrxtimeout((uint16)inst->fwto4RespFrame_sy*2); //reconfigure the timeout before enable
+        //longer timeout as we cannot do delayed receive... so receiver needs to stay on for longer
+        dwt_rxenable(DWT_START_RX_IMMEDIATE);
+        dwt_setpreambledetecttimeout(PTO_PACS); //configure preamble timeout
+        dwt_setrxtimeout((uint16)inst->fwto4RespFrame_sy); //restore the timeout for next RX enable
+        //inst->lateRX++;
+        //led_off(LED_PC9);
+    }
+
+}
+
+/* @fn 	  instanceProcessRXTimeoutTag
+ * @brief function to process RX timeout event
+ * */
+void tag_process_rx_timeout(instance_data_t *inst)
+{
+    //inst->rxTimeouts ++ ;
+
+#if(DISCOVERY == 1)
+    if(inst->twrMode == GREETER)
+    {
+        inst->instToSleep = TRUE ;
+        // initiate the re-transmission of the poll that was not responded to
+        inst->testAppState = TA_TXE_WAIT ;
+        inst->nextState = TA_TXBLINK_WAIT_SEND ;
+    }
+    else
+#endif
+    {
+
+#if (TAG_HASTO_RANGETO_A0 == 0)
+        if(inst->rxResponseMask == 0) //if any response have been received send a Final else go to SLEEP
         {
-            if(inst_slot_number > 1)
+            inst->instToSleep = TRUE ; //set sleep to TRUE so that tag will go to DEEP SLEEP before next ranging attempt
+            inst->testAppState = TA_TXE_WAIT ;
+            inst->nextState = TA_TXPOLL_WAIT_SEND ;
+        }
+#else
+
+        //if tag times out - no response (check if we are to send a final)
+        //send the final only if it has received response from anchor 0
+        if((inst->previousState == TA_TXPOLL_WAIT_SEND)
+                && ((inst->rxResponseMask & 0x1) == 0)
+          )
+        {
+            inst->instToSleep = TRUE ; //set sleep to TRUE so that tag will go to DEEP SLEEP before next ranging attempt
+            inst->testAppState = TA_TXE_WAIT ;
+            inst->nextState = TA_TXPOLL_WAIT_SEND ;
+        }
+#endif
+        else if (inst->previousState == TA_TXFINAL_WAIT_SEND) //got here from main (error sending final - handle as timeout)
+        {
+            dwt_forcetrxoff();	//this will clear all events
+            inst->instToSleep = TRUE ;
+            // initiate the re-transmission of the poll that was not responded to
+            inst->testAppState = TA_TXE_WAIT ;
+            inst->nextState = TA_TXPOLL_WAIT_SEND ;
+        }
+        else //send the final
+        {
+            // initiate the transmission of the final
+            inst->testAppState = TA_TXE_WAIT ;
+            inst->nextState = TA_TXFINAL_WAIT_SEND ;
+        }
+
+    }
+}
+
+/**
+ * @brief function to re-enable the receiver and also adjust the timeout before sending the final message
+ * if it is time so send the final message, the callback will notify the application, else the receiver is
+ * automatically re-enabled
+ *
+ * this function is only used for tag when ranging to other anchors
+ */
+uint8 tag_rx_reenable(uint16 sourceAddress, uint8 error)
+{
+    uint8 type_pend = DWT_SIG_DW_IDLE;
+    uint8 anc = sourceAddress & 0x3;
+    instance_data_t* inst = instance_get_local_structure_ptr(0);
+
+    switch(anc)
+    {
+    //if we got Response from anchor 3 - this is the last expected response - send the final
+    case 3:
+        type_pend = DWT_SIG_DW_IDLE;
+        break;
+
+    //if we got response from anchor 0, 1, or 2 - go back to wait for next anchor's response
+    //if we got response from 0, then still expecting 3, so remainingRespToRx set to 3
+    case 0:
+    case 1:
+    case 2:
+    default:
+        if(inst->remainingRespToRx > 0) //can get here as result of error frame so need to check
+        {
+            //can't use anc address as this is an error frame, so just re-enable TO based on remainingRespToRx count
+            if(error == 0)
             {
-                diff_time += (tag_id + 1); //产生随机时间避免一直冲突     
-                if(diff_time > inst_one_slot_time * inst_slot_number / 2)
+                switch (anc)
                 {
-                    diff_time = 0;
+                case 0:
+                    inst->remainingRespToRx = 3; //expecting 3 more responses
+                    break;
+                case 1:
+                    inst->remainingRespToRx = 2; //expecting 2 more responses
+                    break;
+                case 2:
+                    inst->remainingRespToRx = 1; //expecting 1 more response
+                    break;
                 }
             }
-            else
+            //Poll sent at tagPollTxTime_32bit
+            //1st response is delayTime + fixedReplyDelayAnc32h - preambleDuration_32MSBs
+            //2nd is delayTime + fixedReplyDelayAnc32h - preambleDuration_32MSBs + fixedReplyDelayAnc32h
+            tag_enable_rx(inst->tagPollTxTime32h +
+                          (MAX_ANCHOR_LIST_SIZE-inst->remainingRespToRx+1)*(inst->fixedReplyDelayAnc32h));
+
+            type_pend = DWT_SIG_RX_PENDING ;
+        }
+        else //finished waiting for responses - no responses left to receive... send a final
+        {
+            type_pend = DWT_SIG_DW_IDLE; //report timeout - send the final if due to be sent
+        }
+        break;
+
+    }
+
+    return type_pend;
+}
+
+/**
+ * @brief this function handles frame error event, it will either signal TO or re-enable the receiver
+ */
+void tag_handle_error_unknownframe(event_data_t dw_event)
+{
+    instance_data_t* inst = instance_get_local_structure_ptr(0);
+
+    if(inst->twrMode != GREETER)
+    {
+        //re-enable the receiver (after error frames as we are not using auto re-enable
+        //for ranging application rx error frame is same as TO - as we are not going to get the expected frame
+        inst->remainingRespToRx--; //got something (need to reduce timeout (for remaining responses))
+
+        dw_event.typePend = tag_rx_reenable(0, 1); //check if receiver will be re-enabled or it's time to send the final
+    }
+    else
+    {
+        dw_event.typePend = DWT_SIG_DW_IDLE; //in GREETER mode only waiting for 1 frame
+    }
+
+    dw_event.type = 0;
+    //dw_event.typeSave = 0x40 | DWT_SIG_RX_TIMEOUT;
+    dw_event.rxLength = 0;
+
+    instance_putevent(dw_event, DWT_SIG_RX_TIMEOUT);
+}
+
+/**
+ * @brief this is the receive timeout event callback handler
+ */
+void rx_to_cb_tag(const dwt_cb_data_t *rxd)
+{
+    event_data_t dw_event;
+
+    //microcontroller time at which we received the frame
+    dw_event.uTimeStamp = portGetTickCnt();
+    tag_handle_error_unknownframe(dw_event);
+}
+
+/**
+ * @brief this is the receive error event callback handler
+ */
+void rx_err_cb_tag(const dwt_cb_data_t *rxd)
+{
+    event_data_t dw_event;
+
+    //microcontroller time at which we received the frame
+    dw_event.uTimeStamp = portGetTickCnt();
+    tag_handle_error_unknownframe(dw_event);
+}
+
+/**
+ * @brief this is the receive event callback handler, the received event is processed and the instance either
+ * responds by sending a response frame or re-enables the receiver to await the next frame
+ * once the immediate action is taken care of the event is queued up for application to process
+ */
+void rx_ok_cb_tag(const dwt_cb_data_t *rxd)
+{
+    instance_data_t* inst = instance_get_local_structure_ptr(0);
+    uint8 rxTimeStamp[5]  = {0, 0, 0, 0, 0};
+
+    uint8 rxd_event = 0;
+    uint8 fcode_index  = 0;
+    uint8 srcAddr_index = 0;
+    event_data_t dw_event;
+
+    //microcontroller time at which we received the frame
+    dw_event.uTimeStamp = portGetTickCnt();
+
+    //if we got a frame with a good CRC - RX OK
+    {
+        dw_event.rxLength = rxd->datalength;
+
+        //need to process the frame control bytes to figure out what type of frame we have received
+        if(rxd->fctrl[0] == 0x41)
+        {
+            if((rxd->fctrl[1] & 0xCC) == 0x88) //short address
             {
-                diff_time = 0;
+                fcode_index = FRAME_CRTL_AND_ADDRESS_S; //function code is in first byte after source address
+                srcAddr_index = FRAME_CTRLP + ADDR_BYTE_SIZE_S;
+                rxd_event = DWT_SIG_RX_OKAY;
             }
-                     
-            range_nb++;
-            /* poll数据打包 */
-            tx_poll_msg[SEQ_NB_IDX] = frame_seq_nb++;  
-            tx_poll_msg[PANID_IDX] = (uint8_t)PAN_ID; 
-            tx_poll_msg[PANID_IDX + 1] = (uint8_t)(PAN_ID>>8); 
-            tx_poll_msg[RANGE_NB_IDX] = range_nb;  
-            tx_poll_msg[SENDER_SHORT_ADD_IDX] = tag_id;
-            tx_poll_msg[FUNC_CODE_IDX] = FUNC_CODE_POLL;
-            tx_poll_msg[POLL_MSG_SOS_IDX] = sos;
-            if(alarm > 0)
-                alarm = 1;
-            tx_poll_msg[POLL_MSG_ALARM_STA_IDX] = alarm;
-#if defined(ANCRANGE)  
-            if(ancrange_flag > 0)
+#if (DISCOVERY == 1)
+            else if((rxd->fctrl[1] & 0xCC) == 0x8c) //long/short address - ranging init message
             {
-                battery = 0xff;
+                fcode_index = FRAME_CRTL_AND_ADDRESS_LS; //function code is in first byte after source address
+                srcAddr_index = FRAME_CTRLP + ADDR_BYTE_SIZE_L;
+                rxd_event = DWT_SIG_RX_OKAY;
             }
 #endif
-            // tx_poll_msg[POLL_MSG_BATTERY_IDX] = battery;
-
-            for(int i = 0; i < 10; i++)  //打包用户字节
-            {
-                tx_poll_msg[POLL_MSG_USER_IDX + i] = user_data[i];
-            }
-
-            range_time = portGetTickCnt();                           //获取测距时间，用于dw_main.c中串口打包
-            dwt_writetxdata(POLL_MSG_LEN + FCS_LEN, tx_poll_msg, 0); //数据写入DW3000数据缓冲区
-            dwt_writetxfctrl(POLL_MSG_LEN + FCS_LEN, 0, 1);          //配置TX帧控制寄存器
-            tx_status = TX_WAIT;                                     //发送状态标志，在中断回调函数变更
-            int ret = dwt_starttx(DWT_START_TX_IMMEDIATE);           //立即发送POLL消息
-            if(ret == DWT_ERROR)
-            {
-                next_period_time = range_time + inst_one_slot_time * inst_slot_number + ((Correction_flag == 1)?0:(diff_time));  //如该标签未被时序校准，初次上电，增加随机时间，避免一直冲突      
-                state = STA_IDLE;
-                break;
-            }
-            while(tx_status == TX_WAIT);                        //等待发送成功，tx_status在发送成功中断内变更状态
-            tx_status = TX_WAIT;                                //清标志
-            
-            poll_tx_ts = get_tx_timestamp_u64();                //取得poll_tx时间戳
-
-            resp_expect = MAX_AHCHOR_NUMBER;                    //发送poll消息后，等待最大基站数量个resp消息回复
-
-            resp_valid = 0;                                     //resp有效校验初始化
-            memset(rx_buffer, 0, sizeof(rx_buffer));
-            //发送POLL之后，延时开启接收等待resp
-            dwt_setrxtimeout(inst_resp_rx_timeout);     //设置接收超时时间
-            dwt_setpreambledetecttimeout(PRE_TIMEOUT);  //设置前导码超时
-            uint32_t resp_rx_time;
-            if(inst_dataRate == DWT_BR_110K)
-                resp_rx_time = (poll_tx_ts + (FIRST_RESP_SEND_110K * UUS_TO_DWT_TIME)) >> 8;
-            else if(inst_dataRate == DWT_BR_6M8)
-                resp_rx_time = (poll_tx_ts + (FIRST_RESP_SEND_6P8M * UUS_TO_DWT_TIME)) >> 8;
-            else if(inst_dataRate == DWT_BR_850K)
-                resp_rx_time = (poll_tx_ts + (FIRST_RESP_SEND_850K * UUS_TO_DWT_TIME)) >> 8;
-            dwt_setdelayedtrxtime(resp_rx_time);        //设置接收机开启延时时间
-            ret = dwt_rxenable(DWT_START_RX_DELAYED);   //延时开启接收机
-            if(ret == DWT_ERROR)
-            {
-                next_period_time = range_time + inst_one_slot_time * inst_slot_number + ((Correction_flag == 1)?0:(diff_time));  //如该标签未被时序校准，初次上电，增加随机时间，避免一直冲突      
-                state = STA_IDLE;
-                break;
-            }
-            alarm = 0;
-            for(int i = 0; i < 10; i++)  //清除用户字节
-            {
-                user_data[i] = 0;
-            }
-#if defined(ANCRANGE)        
-            if(ancrange_flag == 2)
-            {
-                ancrange_count--;
-            }
-#endif
-            rx_status = RX_WAIT;
-            state = STA_WAIT_RESP;
-            // printf_use_dma("tx poll \r\n");
-        }
-            break;
-
-        case STA_WAIT_RESP: //等待resp数据接收
-        {
-            if(rx_status == RX_OK)  //接收成功
-            {
-                state = STA_RECV_RESP;
-                // printf_use_dma("rx resp ok.\n");
-            }
-            else if((rx_status == RX_TIMEOUT) || (rx_status == RX_ERROR))//接收超时或接收错误
-            {
-                state = STA_RECV_RESP;
-                // printf_use_dma("rx reception.\n");
-            }
-            if(portGetTickCnt() >= (range_time + 50))  //超时没有中断信号，故障，重启
-            {
-                HAL_NVIC_SystemReset();  //重启
-            }
-        }
-            break;
-
-        case STA_RECV_RESP:
-        {
-            static uint8_t resp_recved = 0;     //单slot内接收到的resp个数，用于判定如果1个resp没收到则不发送final
-            static uint8_t no_resp_count = 0;   //未接收到任何基站回复的周期计数
-            if((rx_status == RX_OK) && (rx_buffer[FUNC_CODE_IDX] != FUNC_CODE_RESP))    //接收消息成功，但是消息不是resp消息则直接进入IDLE
-            {
-                next_period_time = range_time + inst_one_slot_time * inst_slot_number + ((Correction_flag == 1)?0:(diff_time));  //如该标签未被时序校准，初次上电，增加随机时间，避免一直冲突      
-                state = STA_IDLE;
-            }
             else
             {
-                if(rx_buffer[FUNC_CODE_IDX] == FUNC_CODE_RESP)      //正确接收到resp消息
-                {
-                    recv_anc_id = rx_buffer[SENDER_SHORT_ADD_IDX];  //取发送方基站ID
-                    if(rx_buffer[RANGE_NB_IDX] == range_nb)         //和poll相同的range_nb
-                    {
-                        resp_valid = resp_valid | (0x01 << recv_anc_id);  //设置该基站resp有效，
-                        resp_rx_ts[recv_anc_id] = get_rx_timestamp_u64(); //取该基站resp_rx时间戳，用于tof计算
-                        resp_recved++;
-                        /* 将resp消息内的测距信息取出，用于串口数据打包输出 */
-                        distance_report[recv_anc_id]  = (int32_t)rx_buffer[RESP_MSG_PREV_DIS_IDX]   << 24;
-                        distance_report[recv_anc_id] += (int32_t)rx_buffer[RESP_MSG_PREV_DIS_IDX+1] << 16;
-                        distance_report[recv_anc_id] += (int32_t)rx_buffer[RESP_MSG_PREV_DIS_IDX+2] << 8;
-                        distance_report[recv_anc_id] += (int32_t)rx_buffer[RESP_MSG_PREV_DIS_IDX+3];
-
-                        group_report[recv_anc_id] = rx_buffer[RESP_MSG_GROUP_IDX] & 0x7f; //将最高bit置0，最高bit为校准基站标志位
-                        //led_toggle(RUN_LED1);
-                    }
-                    alarm += rx_buffer[RESP_MSG_ALARM_IDX];
-                    //当收到A0基站的resp时，取tagSleepCorrection用于校准
-                    //if(recv_anc_id == 0)
-                    //当基站组ID的最高bit = 1时，为时序校准基站，取tagSleepCorrection用于校准
-                    if((rx_buffer[RESP_MSG_GROUP_IDX] != 0xff) && ((rx_buffer[RESP_MSG_GROUP_IDX] & 0x80) == 0x80))
-                    {
-                        tagSleepCorrection_ms = (int16) (((uint16) rx_buffer[RESP_MSG_SLEEP_COR_IDX] << 8) + rx_buffer[RESP_MSG_SLEEP_COR_IDX+1]);//高8位存11  低8位存12
-                        Correction_flag = 1;
-                        dwt_rxdiag_t rx_diag;
-                        //dwt_readdiagnostics(&rx_diag);//读取信号强度等诊断信息
-                        rx_power = rx_diag.rxPower;
-                    }
-                }
-                resp_expect--;
-                if(resp_expect == 0)//所有resp消息接收完成，发送final
-                {
-                    if(resp_recved == 0)//如果一个resp也没收到，则不发final，直接进入IDLE
-                    {
-                        if((sos == 0) && (alarm == 0))
-                        {
-//                            led_off(LED3);//绿
-//                            led_off(LED2);//蓝
-//                            led_toggle(LED1); //红灯闪烁
-                        }
-                        no_resp_count++;
-                        if(no_resp_count > 10)
-                        {
-                            Correction_flag = 0;
-                            no_resp_count = 0;
-                        }
-                        next_period_time = range_time + inst_one_slot_time * inst_slot_number + ((Correction_flag == 1)?0:(diff_time));  //如该标签未被时序校准，初次上电，增加随机时间，避免一直冲突
-                     
-                        state = STA_IDLE;
-                        range_status = RANGE_ERROR; 
-                        break;
-                        
-                    }
-                    else        //收到1个及以上resp消息
-                    {
-                        if((sos == 0) && (alarm == 0))
-                        {
-//                            led_off(LED1);//红
-//                            led_off(LED2);//蓝
-//                            led_toggle(LED3); //绿灯闪烁
-                        }
-                        state = STA_SEND_FINAL;
-                        resp_recved = 0;
-                        no_resp_count = 0;
-                    }
-                }
-                else//继续接收其他resp消息
-                {
-                    //设置resp数据接收机开启时间
-                    uint32_t resp_rx_time;
-                    if(inst_dataRate == DWT_BR_110K)
-
-                        resp_rx_time = (poll_tx_ts + ((FIRST_RESP_SEND_110K + (MAX_AHCHOR_NUMBER - resp_expect) * inst_data_interval) * UUS_TO_DWT_TIME)) >> 8;
-
-                    else if(inst_dataRate == DWT_BR_6M8)
-
-                        resp_rx_time = (poll_tx_ts + ((FIRST_RESP_SEND_6P8M + (MAX_AHCHOR_NUMBER - resp_expect) * inst_data_interval) * UUS_TO_DWT_TIME)) >> 8;
-
-                    else if(inst_dataRate == DWT_BR_850K)
-
-                        resp_rx_time = (poll_tx_ts + ((FIRST_RESP_SEND_850K + (MAX_AHCHOR_NUMBER - resp_expect) * inst_data_interval) * UUS_TO_DWT_TIME)) >> 8;
-
-                    dwt_setdelayedtrxtime(resp_rx_time);                //设置接收机开启延时时间
-                    int ret = dwt_rxenable(DWT_START_RX_DELAYED);       //延时开启接收机
-                    if(ret == DWT_ERROR)
-                    {
-                        //next_period_time = range_time + inst_one_slot_time * inst_slot_number;//设置下个周期开始时间
-                        next_period_time = range_time + inst_one_slot_time * inst_slot_number + ((Correction_flag == 1)?0:(diff_time));  //如该标签未被时序校准，初次上电，增加随机时间，避免一直冲突
-                        state = STA_IDLE;
-                        break;
-                    }
-                    state = STA_WAIT_RESP;
-                }
+                rxd_event = SIG_RX_UNKNOWN; //not supported - all TREK1000 frames are short addressed
             }
-            rx_status = RX_WAIT;
         }
-            break;
-
-        case STA_SEND_FINAL:
+        else
         {
-            uint64_t final_tx_time;  //设置final发送时间
-            if(inst_dataRate == DWT_BR_110K)
-                final_tx_time = (poll_tx_ts + inst_poll2final_time + TAG_FINALE_SEND_BACK_110K * UUS_TO_DWT_TIME);  //设置final发送时间
-            else if(inst_dataRate == DWT_BR_6M8)
-                final_tx_time = (poll_tx_ts + inst_poll2final_time + TAG_FINALE_SEND_BACK_6P8M * UUS_TO_DWT_TIME);  //设置final发送时间
-            else if(inst_dataRate == DWT_BR_850K)
-                final_tx_time = (poll_tx_ts + inst_poll2final_time + TAG_FINALE_SEND_BACK_850K * UUS_TO_DWT_TIME);  //设置final发送时间
-            final_tx_time = final_tx_time >> 8;
-            dwt_setdelayedtrxtime((uint32)final_tx_time); //在final_tx_time这个时间发送数据
-            final_tx_ts = (((uint64_t)(final_tx_time & 0xFFFFFFFEUL)) << 8) + ant_dly;  //final发送时间戳
+            rxd_event = SIG_RX_UNKNOWN; //not supported - all TREK1000 frames are short addressed
+        }
 
-            //final数据包内写入poll_tx时间戳，final_tx时间戳，4个resp_rx时间戳
-            final_msg_set_ts(&tx_final_msg[FINAL_MSG_POLL_TX_TS_IDX], poll_tx_ts);
-            final_msg_set_ts(&tx_final_msg[FINAL_MSG_FINAL_TX_TS_IDX], final_tx_ts);
-            for(int i = 0; i < MAX_AHCHOR_NUMBER; i++)
+        //read RX timestamp
+        dwt_readrxtimestamp(rxTimeStamp) ;
+        dwt_readrxdata((uint8 *)&dw_event.msgu.frame[0], rxd->datalength, 0);  // Read Data Frame
+        instance_seteventtime(&dw_event, rxTimeStamp);
+
+        dw_event.type = 0; //type will be added as part of adding to event queue
+        //dw_event.typeSave = rxd_event;
+        dw_event.typePend = DWT_SIG_DW_IDLE;
+
+        if(rxd_event == DWT_SIG_RX_OKAY) //Process good/known frame types
+        {
+            uint16 sourceAddress = (((uint16)dw_event.msgu.frame[srcAddr_index+1]) << 8) + dw_event.msgu.frame[srcAddr_index];
+
+            //if tag got a good frame - this is probably a response, but could also be some other non-ranging frame
+            //(although due to frame filtering this is limited as non-addressed frames are filtered out)
+
+            //check if this is a TWR message (and also which one)
+            switch(dw_event.msgu.frame[fcode_index])
             {
-                final_msg_set_ts(&tx_final_msg[FINAL_MSG_RESP1_RX_TS_IDX + i * (FINAL_MSG_TS_LEN + 1)], resp_rx_ts[i]);
-            }
-
-            //final数据打包
-            tx_final_msg[SEQ_NB_IDX] = frame_seq_nb++;
-            tx_final_msg[PANID_IDX] = (uint8_t)PAN_ID; 
-            tx_final_msg[PANID_IDX + 1] = (uint8_t)(PAN_ID>>8); 
-            tx_final_msg[RANGE_NB_IDX] = range_nb;
-            tx_final_msg[SENDER_SHORT_ADD_IDX] = tag_id;
-            tx_final_msg[FINAL_MSG_FINAL_VALID_IDX] = resp_valid;
-            tx_final_msg[FUNC_CODE_IDX] = FUNC_CODE_FINAL;
-
-            for(int i = 0; i < MAX_AHCHOR_NUMBER; i++)
+            //we got a response from a "responder" (anchor)
+            case RTLS_DEMO_MSG_ANCH_RESP:
             {
-                tx_final_msg[FINAL_MSG_A0_GROUP_ID_IDX + i*5] = group_report[i];
+                if(inst->twrMode == INITIATOR)
+                {
+                    //if tag is involved in the ranging exchange expecting responses
+                    uint8 index ;
+                    inst->remainingRespToRx--; //got 1 more response or other RX frame - need to reduce timeout (for next response)
+                    dw_event.typePend = tag_rx_reenable(sourceAddress, 0); //remainingRespToRx decremented above...
+                    index = RRXT0 + 5*(sourceAddress & 0x3);
+
+                    inst->rxResponseMask |= (0x1 << (sourceAddress & 0x3)); //add anchor ID to the mask
+                    // Write Response RX time field of Final message
+                    memcpy(&(inst->msg_f.messageData[index]), rxTimeStamp, 5);
+                    break;
+                }
             }
-
-            dwt_writetxdata(FIANL_MSG_LEN + FCS_LEN, tx_final_msg, 0); //数据写入数据缓冲区
-            dwt_writetxfctrl(FIANL_MSG_LEN + FCS_LEN, 0, 1); 
-
-            tx_status = TX_WAIT;                              //发送状态标志，在中断回调函数变更
-            int ret = dwt_starttx(DWT_START_TX_DELAYED);      //延时发送
-            if(ret == DWT_ERROR)
+#if (DISCOVERY == 1)
+            case RTLS_DEMO_MSG_RNG_INIT:
             {
-                next_period_time = range_time + inst_one_slot_time * inst_slot_number;//设置下个周期开始时间
-                state = STA_IDLE;
-                break;
+                if(inst->twrMode == GREETER)
+                {
+                    rxd_event = RTLS_DEMO_MSG_RNG_INIT;
+                    break; //process the event in the application
+                }
             }
-            while(tx_status == TX_WAIT);            //等待发送成功，tx_status在发送成功中断内变更状态
-            tx_status = TX_WAIT;                    //清标志
-            range_status = RANGE_TWR_OK;            //设置TWR成功测距标志，在dw_main.c里判断打包串口输出       
-            next_period_time = range_time + inst_one_slot_time * inst_slot_number + tagSleepCorrection_ms;  //设置下个周期开始时间
-            tagSleepCorrection_ms = 0;
-            state = STA_IDLE;
+#endif
+            case RTLS_DEMO_MSG_ANCH_POLL:
+            case RTLS_DEMO_MSG_TAG_POLL:
+            case RTLS_DEMO_MSG_TAG_FINAL:
+            case RTLS_DEMO_MSG_ANCH_FINAL:
+            case RTLS_DEMO_MSG_ANCH_RESP2:
+            default:
+                //tag should ignore any other frames - only receive responses
+            {
+                tag_handle_error_unknownframe(dw_event);
+                //inst->rxMsgCount++;
+                return;
+            }
+            }
+            instance_putevent(dw_event, rxd_event);
 
+            //inst->rxMsgCount++;
+        }
+        else //if (rxd_event == SIG_RX_UNKNOWN) //need to re-enable the rx (got unknown frame type)
+        {
+            tag_handle_error_unknownframe(dw_event);
+        }
+    }
+}
+// -------------------------------------------------------------------------------------------------------------------
+//
+// the main instance state machine for tag application
+//
+// -------------------------------------------------------------------------------------------------------------------
+//
+int tag_app_run(instance_data_t *inst)
+{
+    int instDone = INST_NOT_DONE_YET;
+    int message = instance_peekevent(); //get any of the received events from ISR
+
+    switch (inst->testAppState)
+    {
+    case TA_INIT :
+        // printf_use_dma("TA_INIT\r\n");
+        switch (inst->mode)
+        {
+        case TAG:
+        {
+            uint16 sleep_mode = 0;
+
+            dwt_enableframefilter(DWT_FF_DATA_EN | DWT_FF_ACK_EN); //allow data, ack frames;
+
+            inst->eui64[0] += inst->instanceAddress16; //so switch 5,6,7 can be used to emulate more tags
+            dwt_seteui(inst->eui64);
+            dwt_setpanid(inst->panID);
+#if (DISCOVERY == 1)
+            //Start off by sending Blinks and wait for Anchor to send Ranging Init
+            inst->testAppState = TA_TXBLINK_WAIT_SEND;
+            inst->tagSleepTime_ms = BLINK_PERIOD ;
+            memcpy(inst->blinkmsg.tagID, inst->eui64, ADDR_BYTE_SIZE_L);
+            inst->newRangeTagAddress = inst->eui64[1];
+            inst->newRangeTagAddress = (inst->newRangeTagAddress << 8) + inst->eui64[0];
+
+#else
+            memcpy(inst->eui64, &inst->instanceAddress16, ADDR_BYTE_SIZE_S);
+            //set source address
+            inst->newRangeTagAddress = inst->instanceAddress16 ;
+            dwt_setaddress16(inst->instanceAddress16);
+
+            //Start off by Sleeping 1st -> set instToSleep to TRUE
+            inst->nextState = TA_TXPOLL_WAIT_SEND;
+            inst->testAppState = TA_TXE_WAIT;
+            inst->instToSleep = TRUE ;
+            inst->tagSleepTime_ms = inst->tagPeriod_ms ;
+#endif
+            inst->rangeNum = 0;
+            inst->tagSleepCorrection_ms = 0;
+
+            sleep_mode = (DWT_PRESRV_SLEEP|DWT_CONFIG|DWT_TANDV);
+
+            if(inst->configData.txPreambLength == DWT_PLEN_64)  //if using 64 length preamble then use the corresponding OPSet
+                sleep_mode |= DWT_LOADOPSET;
+
+#if (DEEP_SLEEP == 1)
+            dwt_configuresleep(sleep_mode, DWT_WAKE_WK|DWT_WAKE_CS|DWT_SLP_EN); //configure the on wake parameters (upload the IC config settings)
+#endif
+            instance_config_frameheader_16bit(inst);
+            inst->instanceWakeTime_ms = portGetTickCnt();
+        }
+        break;
+        default:
             break;
         }
+        break; // end case TA_INIT
+
+    case TA_SLEEP_DONE :
+    {
+        // printf_use_dma("TA_SLEEP_DONE\r\n");
+        event_data_t* dw_event = instance_getevent(10); //clear the event from the queue
         
-        case STA_IDLE:
+        // waiting for timout from application to wakeup IC
+        if (dw_event->type != DWT_SIG_RX_TIMEOUT)
+        {
+            // if no pause and no wake-up timeout continu waiting for the sleep to be done.
+            instDone = INST_DONE_WAIT_FOR_NEXT_EVENT; //wait here for sleep timeout
+            // printf_use_dma("wake-up timeout.\r\n");
+            break;
+        }
+
+        instDone = INST_NOT_DONE_YET;
+        inst->instToSleep = FALSE ;
+        inst->testAppState = inst->nextState;
+        inst->nextState = 0;                          // clear
+        inst->instanceWakeTime_ms = portGetTickCnt(); // Record the time count when we wake-up
+#if (DEEP_SLEEP == 1)
+        {
+            //wake up device from low power mode
+            led_on(RUN_LED1);
+
+            port_wakeup_IC_fast();
+
+            led_off(RUN_LED1);
+
+            //this is platform dependent - only program if DW EVK/EVB
+            // dwt_setleds(1);
+
+            //MP bug - TX antenna delay needs reprogramming as it is not preserved (only RX)
+            dwt_settxantennadelay(inst->txAntennaDelay) ;
+#if(DISCOVERY == 0)
+            //set EUI as it will not be preserved unless the EUI is programmed and loaded from NVM
+            dwt_seteui(inst->eui64);
+#endif
+        }
+#else
+        Sleep(3); //to approximate match the time spent in the #if above
+#endif
+
+        instance_set_antennadelays(); //this will update the antenna delay if it has changed
+        instance_set_txpower(); //configure TX power if it has changed
+#if (READ_EVENT_COUNTERS == 1)
+        dwt_configeventcounters(1);
+#endif
+    }
+    break;
+    case TA_TXE_WAIT : //either go to sleep or proceed to TX a message
+        //if we are scheduled to go to sleep before next transmission then sleep first.
+#if (DISCOVERY == 1)
+        if(((inst->nextState == TA_TXPOLL_WAIT_SEND)
+                || (inst->nextState == TA_TXBLINK_WAIT_SEND))
+#else
+        if((inst->nextState == TA_TXPOLL_WAIT_SEND)
+#endif
+                && (inst->instToSleep)  //go to sleep before sending the next poll/ starting new ranging exchange
+          )
+        {
+            inst->rangeNum++; //increment the range number before going to sleep
+            //the app should put chip into low power state and wake up after tagSleepTime_ms time...
+            //the app could go to *_IDLE state and wait for uP to wake it up...
+            instDone = INST_DONE_WAIT_FOR_NEXT_EVENT_TO; //don't sleep here but kick off the Sleep timer countdown
+            inst->testAppState = TA_SLEEP_DONE;
+
+            {
+#if (READ_EVENT_COUNTERS == 1)
+                dwt_readeventcounters(&inst->ecounters);
+#endif
+#if (DEEP_SLEEP == 1)
+                //put device into low power mode
+                dwt_entersleep(); //go to sleep
+#endif
+                if(inst->rxResponseMask != 0)
+                {
+                    //DW1000 gone to sleep - report the received range
+                    inst->newRange = instance_calc_ranges(&inst->tofArray[0], MAX_ANCHOR_LIST_SIZE, TOF_REPORT_T2A, &inst->rxResponseMask);
+                    inst->rxResponseMaskReport = inst->rxResponseMask;
+                    inst->rxResponseMask = 0;
+                    inst->newRangeTime = portGetTickCnt() ;
+                }
+            }
+
+        }
+        else //proceed to configuration and transmission of a frame
+        {
+            inst->testAppState = inst->nextState;
+            inst->nextState = 0; //clear
+        }
+        break ; // end case TA_TXE_WAIT
+    case TA_TXBLINK_WAIT_SEND :
+    {
+        int flength = (BLINK_FRAME_CRTL_AND_ADDRESS + FRAME_CRC);
+
+        //blink frames with IEEE EUI-64 tag ID
+        inst->blinkmsg.frameCtrl = 0xC5 ;
+        inst->blinkmsg.seqNum = inst->frameSN++;
+
+        dwt_writetxdata(flength, (uint8 *)  (&inst->blinkmsg), 0) ;	// write the frame data
+        dwt_writetxfctrl(flength, 0, 1);
+
+        inst->twrMode = GREETER;
+        //using wait for response to do delayed receive
+        inst->wait4ack = DWT_RESPONSE_EXPECTED;
+        inst->rxResponseMask = 0;
+
+        dwt_setrxtimeout((uint16)inst->fwto4RespFrame_sy*2);  //units are symbols (x2 as ranging init > response)
+        //set the delayed rx on time (the ranging init will be sent after this delay)
+        dwt_setrxaftertxdelay((uint32)inst->tagRespRxDelay_sy);  //units are 1.0256us - wait for wait4respTIM before RX on (delay RX)
+
+        dwt_starttx(DWT_START_TX_IMMEDIATE | inst->wait4ack); //always using immediate TX and enable delayed RX
+
+        inst->instToSleep = 1; //go to Sleep after this blink
+        inst->testAppState = TA_RX_WAIT_DATA ; // to to RX, expecting ranging init response
+        inst->previousState = TA_TXBLINK_WAIT_SEND ;
+        instDone = INST_DONE_WAIT_FOR_NEXT_EVENT; //will use RX FWTO to time out (set below)
+    }
+    break ; // end case TA_TXBLINK_WAIT_SEND
+
+    case TA_TXPOLL_WAIT_SEND :
+    {
+        // printf("TA_TXPOLL_WAIT_SEND\r\n");
+        inst->msg_f.messageData[POLL_RNUM] = inst->rangeNum; //copy new range number
+        inst->msg_f.messageData[FCODE] = RTLS_DEMO_MSG_TAG_POLL; //message function code (specifies if message is a poll, response or other...)
+        inst->psduLength = (TAG_POLL_MSG_LEN + FRAME_CRTL_AND_ADDRESS_S + FRAME_CRC);
+        inst->msg_f.seqNum = inst->frameSN++; //copy sequence number and then increment
+        inst->msg_f.sourceAddr[0] = inst->instanceAddress16 & 0xff; //inst->eui64[0]; //copy the address
+        inst->msg_f.sourceAddr[1] = (inst->instanceAddress16>>8) & 0xff; //inst->eui64[1]; //copy the address
+        inst->msg_f.destAddr[0] = 0xff;  //set the destination address (broadcast == 0xffff)
+        inst->msg_f.destAddr[1] = 0xff;  //set the destination address (broadcast == 0xffff)
+        dwt_writetxdata(inst->psduLength, (uint8 *)  &inst->msg_f, 0) ;	// write the frame data
+
+        //set the delayed rx on time (the response message will be sent after this delay (from A0))
+        dwt_setrxaftertxdelay((uint32)inst->tagRespRxDelay_sy);  //units are 1.0256us - wait for wait4respTIM before RX on (delay RX)
+        inst->remainingRespToRx = MAX_ANCHOR_LIST_SIZE;          //expecting 4 responses
+        dwt_setrxtimeout((uint16)inst->fwto4RespFrame_sy);       //configure the RX FWTO
+        dwt_setpreambledetecttimeout(PTO_PACS);                  //configure preamble timeout
+
+        inst->rxResponseMask = 0;                   //reset/clear the mask of received responses when tx poll
+
+        inst->wait4ack = DWT_RESPONSE_EXPECTED;     //response is expected - automatically enable the receiver
+
+        dwt_writetxfctrl(inst->psduLength, 0, 1);   //write frame control
+
+        inst->twrMode = INITIATOR;
+
+        dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED); //transmit the frame
+
+        inst->testAppState = TA_TX_WAIT_CONF ;       // wait confirmation
+        inst->previousState = TA_TXPOLL_WAIT_SEND ;
+        instDone = INST_DONE_WAIT_FOR_NEXT_EVENT;   //will use RX FWTO to time out (set above)
+
+    }
+    break;
+
+    case TA_TXFINAL_WAIT_SEND :
+    {
+        //the final has the same range number as the poll (part of the same ranging exchange)
+        inst->msg_f.messageData[POLL_RNUM] = inst->rangeNum;
+        //the mask is sent so the anchors know whether the response RX time is valid
+        inst->msg_f.messageData[VRESP] = inst->rxResponseMask;
+        inst->msg_f.messageData[FCODE] = RTLS_DEMO_MSG_TAG_FINAL;       //message function code (specifies if message is a poll, response or other...)
+        inst->psduLength = (TAG_FINAL_MSG_LEN + FRAME_CRTL_AND_ADDRESS_S + FRAME_CRC);
+        inst->msg_f.seqNum = inst->frameSN++;
+        dwt_writetxdata(inst->psduLength, (uint8 *)  &inst->msg_f, 0) ; // write the frame data
+
+        inst->wait4ack = 0; //clear the flag not using wait for response as this message ends the ranging exchange
+
+        if(instance_send_delayed_frame(inst, DWT_START_TX_DELAYED))
+        {
+            // initiate the re-transmission
+            inst->testAppState = TA_TXE_WAIT ; //go to TA_TXE_WAIT first to check if it's sleep time
+            inst->nextState = TA_TXPOLL_WAIT_SEND ;
+            inst->instToSleep = TRUE ;
+            break; //exit this switch case...
+        }
+        else
+        {
+            inst->testAppState = TA_TX_WAIT_CONF;   // wait confirmation
+        }
+
+        inst->previousState = TA_TXFINAL_WAIT_SEND;
+        inst->instToSleep = TRUE ;
+        instDone = INST_DONE_WAIT_FOR_NEXT_EVENT; //will use RX FWTO to time out (set above)
+    }
+    // break;
+
+
+    case TA_TX_WAIT_CONF :
+    {
+        // printf("TA_TX_WAIT_CONF.");
+        event_data_t* dw_event = instance_getevent(11); //get and clear this event
+
+        if(dw_event->type != DWT_SIG_TX_DONE) //wait for TX done confirmation
+        {
+            instDone = INST_DONE_WAIT_FOR_NEXT_EVENT;
+            break;
+        }
+
+        instDone = INST_NOT_DONE_YET;
+
+        if(inst->previousState == TA_TXFINAL_WAIT_SEND)
+        {
+            inst->testAppState = TA_TXE_WAIT ;
+            inst->nextState = TA_TXPOLL_WAIT_SEND ;
+            break;
+        }
+        else
+        {
+            inst->txu.txTimeStamp = dw_event->timeStamp;
+            inst->tagPollTxTime32h = dw_event->timeStamp32h;
+
+            if(inst->previousState == TA_TXPOLL_WAIT_SEND)
+            {
+                uint64 tagCalculatedFinalTxTime ;
+                // Embed into Final message: 40-bit pollTXTime,  40-bit respRxTime,  40-bit finalTxTime
+                tagCalculatedFinalTxTime =  (inst->txu.txTimeStamp + inst->pollTx2FinalTxDelay) & MASK_TXDTS;
+
+                inst->delayedTRXTime32h = tagCalculatedFinalTxTime >> 8; //high 32-bits
+                // Calculate Time Final message will be sent and write this field of Final message
+                // Sending time will be delayedReplyTime, snapped to ~125MHz or ~250MHz boundary by
+                // zeroing its low 9 bits, and then having the TX antenna delay added
+                // getting antenna delay from the device and add it to the Calculated TX Time
+                tagCalculatedFinalTxTime = tagCalculatedFinalTxTime + inst->txAntennaDelay;
+                tagCalculatedFinalTxTime &= MASK_40BIT;
+
+                // Write Calculated TX time field of Final message
+                memcpy(&(inst->msg_f.messageData[FTXT]), (uint8 *)&tagCalculatedFinalTxTime, 5);
+                // Write Poll TX time field of Final message
+                memcpy(&(inst->msg_f.messageData[PTXT]), (uint8 *)&inst->txu.tagPollTxTime, 5);
+            }
+
+            inst->testAppState = TA_RX_WAIT_DATA ;    // After sending, tag expects response/report, anchor waits to receive a final/new poll
+
+            message = 0;
+            //fall into the next case (turn on the RX)
+        }
+    }
+    break ; // end case TA_TX_WAIT_CONF
+
+    case TA_RX_WAIT_DATA :                                                                     // Wait RX data
+        // printf("TA_RX_WAIT_DATA %d", message) ;
+
+        switch (message)
         {
 
-            static unsigned long nowtime;
-            nowtime = portGetTickCnt();
-#if defined(ANCRANGE)
-            if((ancrange_count == 0) && (ancrange_flag == 2)) //本次切换T0测距结束，切回基站
-            {
-                dev_id = temp_dev_id;
-                instance_mode = ANCHOR; 
-                ancrange_flag = 0;
-                set_instance();
-                break;
-            }
-            
-            if(ancrange_flag == 1) //基站切换tag，第一次发送poll按同步时间slot发送
-            {
-                if(nowtime % (inst_one_slot_time * inst_slot_number) == 0) //用T0 slot发送
-                {
-                    ancrange_flag = 2; //设置基站间测距模式开启 1=开始 2=运行中 0=停止
-                    dwt_forcetrxoff();
-                    state = STA_SEND_POLL;
-                    break;
-                }
-            }
-            else
-#endif
-            {
-                if(nowtime >= next_period_time)  //下个周期发送时间到
-                {
-                    dwt_forcetrxoff();
-                    // battery = 0;
-//                    if(USE_CW2015 == 1)
-//                    {
-//                        battery = cw2015_read_battery();
-//                    }
-                    state = STA_SEND_POLL;
-                    break;
-                }
-            }
+        //if we have received a DWT_SIG_RX_OKAY event - this means that the message is IEEE data type - need to check frame control to know which addressing mode is used
+        case DWT_SIG_RX_OKAY :
+        {
+            event_data_t* dw_event = instance_getevent(15); //get and clear this event
+            uint8  srcAddr[8] = {0,0,0,0,0,0,0,0};
+            uint8  dstAddr[8] = {0,0,0,0,0,0,0,0};
+            int fcode = 0;
+            uint8 tof_idx  = 0;
+            uint8 *messageData;
 
-            //LED控制
-            if((portGetTickCnt()%200 == 0) && (portGetTickCnt() > (led_time + 5)) && ((sos == 1) || (alarm > 0)))
+            memcpy(&srcAddr[0], &(dw_event->msgu.rxmsg_ss.sourceAddr[0]), ADDR_BYTE_SIZE_S);
+            memcpy(&dstAddr[0], &(dw_event->msgu.rxmsg_ss.destAddr[0]), ADDR_BYTE_SIZE_S);
+            fcode = dw_event->msgu.rxmsg_ss.messageData[FCODE];
+            messageData = &dw_event->msgu.rxmsg_ss.messageData[0];
+
+            tof_idx = srcAddr[0] & 0x3 ;
+            //process ranging messages
+            switch(fcode)
             {
-                led_time = portGetTickCnt();
-                if(led_flag)
+            case RTLS_DEMO_MSG_ANCH_RESP:
+            {
+                uint8 currentRangeNum = (messageData[TOFRN] + 1); //current = previous + 1
+
+                if(GATEWAY_ANCHOR_ADDR == (srcAddr[0] | ((uint32)(srcAddr[1] << 8)))) //if response from gateway then use the correction factor
                 {
-//                    led_on(LED1); //红灯
-//                    led_off(LED2); //绿灯
-//                    led_off(LED3); //蓝
+                    // int sleepCorrection = (int16) (((uint16) messageData[RES_TAG_SLP1] << 8) + messageData[RES_TAG_SLP0]);
+                    // casting received bytes to int because this is a signed correction -0.5 periods to +1.5 periods
+                    inst->tagSleepCorrection_ms = (int16) (((uint16) messageData[RES_TAG_SLP1] << 8) + messageData[RES_TAG_SLP0]);
+                    inst->tagSleepRnd_ms = 0; // once we have initial response from Anchor #0 the slot correction acts and we don't need this anymore
+                }
+
+                if(dw_event->typePend == DWT_SIG_RX_PENDING)
+                {
+                    // stay in TA_RX_WAIT_DATA - receiver is already enabled, waiting for next response.
+                }
+                //DW1000 idle - send the final
+                else //if(dw_event->type_pend == DWT_SIG_DW_IDLE)
+                {
+#if (TAG_HASTO_RANGETO_A0 == 1)
+                    if(inst->rxResponseMask & 0x1)//if this is tag and A0's response received send the final
+#endif
+                    {
+                        inst->testAppState = TA_TXFINAL_WAIT_SEND ; // send our response / the final
+                    }
+#if (TAG_HASTO_RANGETO_A0 == 1)
+                    else //go to sleep
+                    {
+                        inst->testAppState = TA_TXE_WAIT ; //go to TA_TXE_WAIT first to check if it's sleep time
+                        inst->nextState = TA_TXPOLL_WAIT_SEND ;
+                        inst->instToSleep = TRUE;
+                    }
+#endif
+                }
+
+                if(currentRangeNum == inst->rangeNum) //these are the previous ranges...
+                {
+                    //copy the ToF and put into array (array holds last 4 ToFs)
+                    memcpy(&inst->tofArray[tof_idx], &(messageData[TOFR]), 4);
+
+                    //check if the ToF is valid, this makes sure we only report valid ToFs
+                    //e.g. consider the case of reception of response from anchor a1 (we are anchor a2)
+                    //if a1 got a Poll with previous Range number but got no Final, then the response will have
+                    //the correct range number but the range will be INVALID_TOF
+                    if(inst->tofArray[tof_idx] != INVALID_TOF)
+                    {
+                        inst->rxResponseMask |= (0x1 << tof_idx);
+                    }
+
                 }
                 else
                 {
-//                    led_off(LED1); //红灯
-//                    led_on(LED2); //绿灯
-//                    led_off(LED3); //蓝
+                    if(inst->tofArray[tof_idx] != INVALID_TOF)
+                    {
+                        inst->tofArray[tof_idx] = INVALID_TOF;
+                    }
                 }
-                led_flag = !led_flag;
-                //motor_on();
+
+
             }
+            break; //RTLS_DEMO_MSG_ANCH_RESP
+
+            default:
+            {
+                tag_process_rx_timeout(inst); //if unknown message process as timeout
+            }
+            break;
+            } //end switch (fcode)
+
         }
-            break;
-        
-        default:
-            break;
-    }
+        break ; //end of DWT_SIG_RX_OKAY
 
-}
+        case RTLS_DEMO_MSG_RNG_INIT :
+        {
+            event_data_t* dw_event = instance_getevent(16); //get and clear this event
+            uint8  srcAddr[8] = {0,0,0,0,0,0,0,0};
 
+            uint8* messageData = &dw_event->msgu.rxmsg_ls.messageData[0];
+            memcpy(&srcAddr[0], &(dw_event->msgu.rxmsg_ls.sourceAddr[0]), ADDR_BYTE_SIZE_S);
 
+            if(GATEWAY_ANCHOR_ADDR == (srcAddr[0] | ((uint32)(srcAddr[1] << 8)))) //if response from gateway then use the correction factor
+            {
+                // casting received bytes to int because this is a signed correction -0.5 periods to +1.5 periods
+                inst->tagSleepCorrection_ms = (int16) (((uint16) messageData[RES_TAG_SLP1] << 8) + messageData[RES_TAG_SLP0]);
+                inst->tagSleepRnd_ms = 0; // once we have initial response from Anchor #0 the slot correction acts and we don't need this anymore
+            }
 
-/*! ------------------------------------------------------------------------------------------------------------------
- * @fn tag_rx_ok_cb()
- *
- * @brief Callback to process RX good frame events
- *
- * @param  cb_data  callback data
- *
- * @return  none
- */
-void tag_rx_ok_cb(const dwt_cb_data_t *cb_data)
+            //get short address from anchor
+            inst->instanceAddress16 = (int16) (((uint16) messageData[RES_TAG_ADD1] << 8) + messageData[RES_TAG_ADD0]);
+
+            //set source address
+            inst->newRangeTagAddress = inst->instanceAddress16 ;
+            dwt_setaddress16(inst->instanceAddress16);
+
+            inst->nextState = TA_TXPOLL_WAIT_SEND;
+            inst->testAppState = TA_TXE_WAIT;
+            inst->instToSleep = TRUE ;
+
+            inst->tagSleepTime_ms = inst->tagPeriod_ms ;
+
+            //inst->twrMode = INITIATOR;
+
+            break; //RTLS_DEMO_MSG_RNG_INIT
+        }
+
+        case DWT_SIG_RX_TIMEOUT :
+        {
+            event_data_t* dw_event = instance_getevent(17); // get and clear this event
+
+            printf("PD_DATA_TIMEOUT %d\n", inst->previousState) ;
+
+            // Anchor can time out and then need to send response - so will be in TX pending
+            if(dw_event->typePend == DWT_SIG_TX_PENDING)
+            {
+                inst->testAppState = TA_TX_WAIT_CONF;              // wait confirmation
+                inst->previousState = TA_TXRESPONSE_SENT_TORX ;    // wait for TX confirmation of sent response
+            }
+            else if(dw_event->typePend == DWT_SIG_DW_IDLE) // if timed out and back in receive then don't process as timeout
+            {
+                tag_process_rx_timeout(inst);
+            }
+            // else if RX_PENDING then wait for next RX event...
+            message = 0; // clear the message as we have processed the event
+        }
+        break ;
+
+        default :
+        {
+            if(message)         // == DWT_SIG_TX_DONE)
+            {
+                instDone = INST_DONE_WAIT_FOR_NEXT_EVENT;
+            }
+            printf("\nERROR - invalid state %d - what is going on??\n", inst->testAppState) ;
+            if(instDone == INST_NOT_DONE_YET) instDone = INST_DONE_WAIT_FOR_NEXT_EVENT;
+        }
+        break;
+
+        }
+        break ; // end case TA_RX_WAIT_DATA
+    default:
+        printf("\nERROR - invalid state %d - what is going on??\n", inst->testAppState) ;
+        break;
+    } // end switch on testAppState
+
+    return instDone;
+} // end testapprun_tag()
+
+// -------------------------------------------------------------------------------------------------------------------
+int tag_run(void)
 {
-    rx_status = RX_OK;
-    if (cb_data->datalength <= FRAME_LEN_MAX)
+    instance_data_t* inst = instance_get_local_structure_ptr(0);
+    int done = INST_NOT_DONE_YET;
+
+    while(done == INST_NOT_DONE_YET)
     {
-        dwt_readrxdata(rx_buffer, cb_data->datalength, 0);
+        done = tag_app_run(inst) ; // run the communications application
+        // printf_use_dma("tag_app_run.\r\n");
     }
 
-    UNUSED(cb_data);
+    if(done == INST_DONE_WAIT_FOR_NEXT_EVENT_TO) //tag has finished the ranging exchange and needs to configure sleep time
+    {
+        int32 nextPeriod ;
 
+        // next period will be a positive number because correction is -0.5 to +1.5 periods, (and tagSleepTime_ms is the period)
+        nextPeriod = inst->tagSleepRnd_ms + inst->tagSleepTime_ms + inst->tagSleepCorrection_ms;
+
+        inst->nextWakeUpTime_ms = (uint32) nextPeriod ; //set timeout time, CAST the positive period to UINT for correct wrapping.
+        inst->tagSleepCorrection_ms = 0; //clear the correction
+        inst->instanceTimerEn = 1; //start timer
+    }
+
+    //check if timer has expired
+    if(inst->instanceTimerEn == 1)
+    {
+        if((portGetTickCnt() - inst->instanceWakeTime_ms) > inst->nextWakeUpTime_ms)
+        {
+            event_data_t dw_event;
+            inst->instanceTimerEn = 0;
+            dw_event.rxLength = 0;
+            dw_event.type = 0;
+            //dw_event.typeSave = 0x80 | DWT_SIG_RX_TIMEOUT;
+            instance_putevent(dw_event, DWT_SIG_RX_TIMEOUT);
+        }
+    }
+    return 0 ;
 }
 
-/*! ------------------------------------------------------------------------------------------------------------------
- * @fn tag_rx_to_cb()
- *
- * @brief Callback to process RX timeout events
- *
- * @param  cb_data  callback data
- *
- * @return  none
- */
-void tag_rx_to_cb(const dwt_cb_data_t *cb_data)
-{
-    rx_status = RX_TIMEOUT;
-    UNUSED(cb_data);
+/* ==========================================================
 
-}
+Notes:
 
-/*! ------------------------------------------------------------------------------------------------------------------
- * @fn tag_rx_err_cb()
- *
- * @brief Callback to process RX error events
- *
- * @param  cb_data  callback data
- *
- * @return  none
- */
-void tag_rx_err_cb(const dwt_cb_data_t *cb_data)
-{
-    rx_status = RX_ERROR;
-    UNUSED(cb_data);
-}
+Previously code handled multiple instances in a single console application
 
-/*! ------------------------------------------------------------------------------------------------------------------
- * @fn tag_tx_conf_cb()
- *
- * @brief Callback to process TX confirmation events
- *
- * @param  cb_data  callback data
- *
- * @return  none
- */
-void tag_tx_conf_cb(const dwt_cb_data_t *cb_data)
-{
-    tx_status = TX_OK;
-    UNUSED(cb_data);
-}
+Now have changed it to do a single instance only. With minimal code changes...(i.e. kept [instance] index but it is always 0.
 
+Windows application should call instance_init() once and then in the "main loop" call instance_run().
+
+*/

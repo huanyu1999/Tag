@@ -2242,6 +2242,7 @@ void dwt_isr(void)
         if(pdw1000local->cbRxOk != NULL)
         {
             pdw1000local->cbRxOk(&pdw1000local->cbData);
+            printf("cbRxOk\r\n");
         }
 
         if (pdw1000local->dblbuffon)
@@ -2255,7 +2256,7 @@ void dwt_isr(void)
     if(status & SYS_STATUS_TXFRS)
     {
         dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_TX); // Clear TX event bits
-
+        
         // In the case where this TXFRS interrupt is due to the automatic transmission of an ACK solicited by a response (with ACK request bit set)
         // that we receive through using wait4resp to a previous TX (and assuming that the IRQ processing of that TX has already been handled), then
         // we need to handle the IC issue which turns on the RX again in this situation (i.e. because it is wrongly applying the wait4resp after the
@@ -2271,6 +2272,7 @@ void dwt_isr(void)
         if(pdw1000local->cbTxDone != NULL)
         {
             pdw1000local->cbTxDone(&pdw1000local->cbData);
+            printf("cbTxDone\r\n");
         }
     }
 
@@ -2291,6 +2293,7 @@ void dwt_isr(void)
         if(pdw1000local->cbRxTo != NULL)
         {
             pdw1000local->cbRxTo(&pdw1000local->cbData);
+            printf("cbRxTo\r\n");
         }
     }
 
@@ -2311,6 +2314,7 @@ void dwt_isr(void)
         if(pdw1000local->cbRxErr != NULL)
         {
             pdw1000local->cbRxErr(&pdw1000local->cbData);
+            printf("cbRxErr\r\n");
         }
     }
 }

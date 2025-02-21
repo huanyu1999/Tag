@@ -19,7 +19,7 @@ extern "C" {
 #endif
 
 
-#ifdef __GNUC__
+// #ifdef __GNUC__
 #include <stdint.h>
 #include <stdio.h>
 #include <stddef.h>
@@ -57,4 +57,4 @@ extern "C" {
 }
 #endif
 
-#endif /* COMPILER_H_ */
+// #endif /* COMPILER_H_ */

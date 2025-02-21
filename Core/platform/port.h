@@ -72,7 +72,7 @@ extern volatile int32_t sys_time_diff;
 
 
 void Sleep(uint32_t Delay);
-unsigned long portGetTickCnt(void);
+uint32_t portGetTickCnt(void);
 
 int switch_is_on(uint16_t GPIOpin);
 
