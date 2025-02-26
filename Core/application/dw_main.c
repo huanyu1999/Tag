@@ -23,7 +23,7 @@ int32_t sort_distance[MAX_TAG_LIST_SIZE] = {-1};        //用于标签距离排�
 // uint8_t inst_ch;                                        //信道号Channel number
 // uint8_t inst_prf;                                       //PRF
 // uint8_t inst_one_slot_time;                             //一个slot的时间，根据通信速率不同而不同，单位ms
-// uint32_t inst_final_rx_timeout;                         //基站final接收超时时间，根据通信速率不同而不同，单位us
+// uint32_t inst_final_rx_timeout;                         =//基站final接收超时时间，根据通信速率不同而不同，单位us
 // uint32_t inst_resp_rx_timeout;                          //标签发送poll后接收resp超时时间，根据通信速率不同而不同，单位us
 // // uint32_t inst_init_rx_timeout;                          //标签发送blink后接收init超时时间，根据通信速率不同而不同，单位us
 // uint64_t inst_poll2final_time;                          //单TWR周期poll起始到final结束的总时间
@@ -54,20 +54,25 @@ uint32_t D17F = 0;
 /* dw1000 rf 配置  */
 static instanceConfig_t uwb_config[CONFIG_BR_NUM] = {
     {
-        .channelNumber = 2, .pulseRepFreq = DWT_PRF_64M, .preambleLen = DWT_PLEN_1024, .pacSize = DWT_PAC32, .preambleCode = 10, .nsSFD = 1, .dataRate = DWT_BR_110K, .phrMode = DWT_PHRMODE_STD, .sfdTO = (1025 + DW_NS_SFD_LEN_110K - 32) 
+        .channelNumber = 2, .pulseRepFreq = DWT_PRF_64M, .preambleLen = DWT_PLEN_1024, .pacSize = DWT_PAC32, 
+        .preambleCode = 9, .nsSFD = 1, .dataRate = DWT_BR_110K, .phrMode = DWT_PHRMODE_STD, .sfdTO = (1025 + DW_NS_SFD_LEN_110K - 32) 
+    }, // uwb_config0
+    {
+        .channelNumber = 5, .pulseRepFreq = DWT_PRF_16M, .preambleLen = DWT_PLEN_128, .pacSize = DWT_PAC8, 
+        .preambleCode = 3, .nsSFD = 0, .dataRate = DWT_BR_6M8, .phrMode = DWT_PHRMODE_STD, .sfdTO = (129 + DW_NS_SFD_LEN_6M8 - 8)
     }, // uwb_config1
     {
-        .channelNumber = 2, .pulseRepFreq = DWT_PRF_64M, .preambleLen = DWT_PLEN_128, .pacSize = DWT_PAC8, .preambleCode = 10, .nsSFD = 1, .dataRate = DWT_BR_6M8, .phrMode = DWT_PHRMODE_STD, .sfdTO = (129 + DW_NS_SFD_LEN_6M8 - 8)
+        .channelNumber = 5, .pulseRepFreq = DWT_PRF_64M, .preambleLen = DWT_PLEN_128, .pacSize = DWT_PAC8, 
+        .preambleCode = 10, .nsSFD = 1, .dataRate = DWT_BR_6M8, .phrMode = DWT_PHRMODE_STD, .sfdTO = (129 + DW_NS_SFD_LEN_6M8 - 8)
     }, // uwb_config2
     {
-        .channelNumber = 5, .pulseRepFreq = DWT_PRF_64M, .preambleLen = DWT_PLEN_128, .pacSize = DWT_PAC8, .preambleCode = 10, .nsSFD = 1, .dataRate = DWT_BR_6M8, .phrMode = DWT_PHRMODE_STD, .sfdTO = (129 + DW_NS_SFD_LEN_6M8 - 8)
-    }, // uwb_config3
+        .channelNumber = 2, .pulseRepFreq = DWT_PRF_64M, .preambleLen = DWT_PLEN_256, .pacSize = DWT_PAC16, 
+        .preambleCode = 9, .nsSFD = 1, .dataRate = DWT_BR_850K, .phrMode = DWT_PHRMODE_STD, .sfdTO = (257 + DW_NS_SFD_LEN_850K - 16)
+    }, // uwb_config3 
     {
-        .channelNumber = 2, .pulseRepFreq = DWT_PRF_64M, .preambleLen = DWT_PLEN_256, .pacSize = DWT_PAC16, .preambleCode = 9, .nsSFD = 1, .dataRate = DWT_BR_850K, .phrMode = DWT_PHRMODE_STD, .sfdTO = (257 + DW_NS_SFD_LEN_850K - 16)
-    }, // uwb_config4 
-    {
-        .channelNumber = 5, .pulseRepFreq = DWT_PRF_64M, .preambleLen = DWT_PLEN_256, .pacSize = DWT_PAC16, .preambleCode = 10, .nsSFD = 1, .dataRate = DWT_BR_850K, .phrMode = DWT_PHRMODE_STD, .sfdTO = (257 + DW_NS_SFD_LEN_850K - 16) 
-    }, // uwb_config5 当前使用的配置，channel 5，baudrate 850K
+        .channelNumber = 5, .pulseRepFreq = DWT_PRF_64M, .preambleLen = DWT_PLEN_256, .pacSize = DWT_PAC16, 
+        .preambleCode = 10, .nsSFD = 1, .dataRate = DWT_BR_850K, .phrMode = DWT_PHRMODE_STD, .sfdTO = (257 + DW_NS_SFD_LEN_850K - 16) 
+    }, // uwb_config4 当前使用的配置，channel 5，baudrate 850K
 };
 
 /* super frame配置 */
@@ -161,7 +166,7 @@ uint32 init_uwbApplication(void)
         dwt_forcetrxoff();
     }
 
-    instance_config(&uwb_config[2], &sf_config[1]);
+    instance_config(&uwb_config[1], &sf_config[1]);
 
     // 因为当前板子引脚分配，dw1000中断脚为PC13，复位引脚为PC14，共用一个中断处理，在setup_DW1000RSTnIRQ中会关闭该中断，因此在这里重新打开。
     HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
@@ -233,11 +238,11 @@ int dw_main(void)
         }
 
         rx = instance_newrange();
-        if(rx != TOF_REPORT_NUL)
+        if(rx == TOF_REPORT_NUL)
         {
             // 打印调试用
-            
-            
+            // printf_use_dma("range failed.\r\n");
+            led_toggle(RUN_LED2);
         }
         // led_toggle(RUN_LED2);
         // printf_use_dma("fafjalkgjal;j;ajl;hk\r\n");

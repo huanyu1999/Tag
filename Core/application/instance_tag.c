@@ -535,10 +535,10 @@ int tag_app_run(instance_data_t *inst)
     case TA_TXPOLL_WAIT_SEND :
     {
         // printf("TA_TXPOLL_WAIT_SEND\r\n");
-        inst->msg_f.messageData[POLL_RNUM] = inst->rangeNum; //copy new range number
+        inst->msg_f.messageData[POLL_RNUM] = inst->rangeNum;     //copy new range number
         inst->msg_f.messageData[FCODE] = RTLS_DEMO_MSG_TAG_POLL; //message function code (specifies if message is a poll, response or other...)
         inst->psduLength = (TAG_POLL_MSG_LEN + FRAME_CRTL_AND_ADDRESS_S + FRAME_CRC);
-        inst->msg_f.seqNum = inst->frameSN++; //copy sequence number and then increment
+        inst->msg_f.seqNum = inst->frameSN++;                    //copy sequence number and then increment
         inst->msg_f.sourceAddr[0] = inst->instanceAddress16 & 0xff; //inst->eui64[0]; //copy the address
         inst->msg_f.sourceAddr[1] = (inst->instanceAddress16>>8) & 0xff; //inst->eui64[1]; //copy the address
         inst->msg_f.destAddr[0] = 0xff;  //set the destination address (broadcast == 0xffff)
@@ -604,10 +604,14 @@ int tag_app_run(instance_data_t *inst)
     case TA_TX_WAIT_CONF :
     {
         // printf("TA_TX_WAIT_CONF.");
+        uint32 reg1, reg2;
         event_data_t* dw_event = instance_getevent(11); //get and clear this event
 
         if(dw_event->type != DWT_SIG_TX_DONE) //wait for TX done confirmation
         {
+            // reg1 = dwt_read32bitoffsetreg(0x0f, 0x1);
+            // reg2 = dwt_read32bitoffsetreg(0x019, 0x1);
+            // printf(" %08x \r\n", reg1);
             instDone = INST_DONE_WAIT_FOR_NEXT_EVENT;
             break;
         }
@@ -651,7 +655,7 @@ int tag_app_run(instance_data_t *inst)
             //fall into the next case (turn on the RX)
         }
     }
-    break ; // end case TA_TX_WAIT_CONF
+    // break ; // end case TA_TX_WAIT_CONF
 
     case TA_RX_WAIT_DATA :                                                                     // Wait RX data
         // printf("TA_RX_WAIT_DATA %d", message) ;
@@ -786,8 +790,7 @@ int tag_app_run(instance_data_t *inst)
         case DWT_SIG_RX_TIMEOUT :
         {
             event_data_t* dw_event = instance_getevent(17); // get and clear this event
-
-            printf("PD_DATA_TIMEOUT %d\n", inst->previousState) ;
+            // printf_use_dma("PD_DATA_TIMEOUT %d\n", inst->previousState) ;
 
             // Anchor can time out and then need to send response - so will be in TX pending
             if(dw_event->typePend == DWT_SIG_TX_PENDING)
@@ -810,8 +813,10 @@ int tag_app_run(instance_data_t *inst)
             {
                 instDone = INST_DONE_WAIT_FOR_NEXT_EVENT;
             }
-            printf("\nERROR - invalid state %d - what is going on??\n", inst->testAppState) ;
-            if(instDone == INST_NOT_DONE_YET) instDone = INST_DONE_WAIT_FOR_NEXT_EVENT;
+            if(instDone == INST_NOT_DONE_YET) 
+            {
+                instDone = INST_DONE_WAIT_FOR_NEXT_EVENT;
+            }
         }
         break;
 
@@ -834,7 +839,6 @@ int tag_run(void)
     while(done == INST_NOT_DONE_YET)
     {
         done = tag_app_run(inst) ; // run the communications application
-        // printf_use_dma("tag_app_run.\r\n");
     }
 
     if(done == INST_DONE_WAIT_FOR_NEXT_EVENT_TO) //tag has finished the ranging exchange and needs to configure sleep time

@@ -196,7 +196,7 @@
 
 //this it the delay used for configuring the receiver on delay (wait for response delay)
 //NOTE: this RX_RESPONSE_TURNAROUND is dependent on the microprocessor and code optimisations
-#define RX_RESPONSE_TURNAROUND              (300) //this takes into account any turnaround/processing time (reporting received poll and sending the response)
+#define RX_RESPONSE_TURNAROUND              (280) //this takes into account any turnaround/processing time (reporting received poll and sending the response)
 
 #define PTO_PACS                            (5)   //tag will use PTO to reduce power consumption (if no response coming stop RX)
 
@@ -489,10 +489,10 @@ typedef struct
 
     //Tag function address/message configuration
     uint8   shortAdd_idx ;				// device's 16-bit address low byte (used as index into arrays [0 - 3])
-    uint8   eui64[8];				// device's EUI 64-bit address
-    uint16  psduLength ;			// used for storing the TX frame length
-    uint8   frameSN;				// modulo 256 frame sequence number - it is incremented for each new frame transmission
-    uint16  panID ;					// panid used in the frames
+    uint8   eui64[8];				    // device's EUI 64-bit address
+    uint16  psduLength ;			    // used for storing the TX frame length
+    uint8   frameSN;				    // modulo 256 frame sequence number - it is incremented for each new frame transmission
+    uint16  panID ;					    // panid used in the frames
 
     //64 bit timestamps
     //union of TX timestamps
@@ -519,7 +519,7 @@ typedef struct
     // bit 2 from anchor ID = 2,
     // bit 3 set if two responses (from Anchor 1 and Anchor 2) received and A0 got third response (from A2)
 
-    uint8   rxResponseMask;			// bit mask - bit 0 = received response from anchor ID = 0, bit 1 from anchor ID = 1 etc...
+    uint8   rxResponseMask;         // bit mask - bit 0 = received response from anchor ID = 0, bit 1 from anchor ID = 1 etc...
     uint8   rxResponseMaskReport;   // this will be set before outputting range reports to signify which are valid
     uint8	rangeNum;				// incremented for each sequence of ranges (each slot)
     uint8	rangeNumA[MAX_TAG_LIST_SIZE];				// array which holds last range number from each tag
@@ -562,11 +562,11 @@ typedef struct
 
 
     //ranging counters
-    int longTermRangeCount ; //total number of ranges
+    int longTermRangeCount ; // total number of ranges
 
-    int newRange;			//flag set when there is a new range to report TOF_REPORT_A2A or TOF_REPORT_T2A
-    int newRangeAncAddress; //last 4 bytes of anchor address - used for printing/range output display
-    int newRangeTagAddress; //last 4 bytes of tag address - used for printing/range output display
+    int newRange;            // flag set when there is a new range to report TOF_REPORT_A2A or TOF_REPORT_T2A
+    int newRangeAncAddress;  // last 4 bytes of anchor address - used for printing/range output display
+    int newRangeTagAddress;  // last 4 bytes of tag address - used for printing/range output display
     int newRangeTime;
 
     uint8 gatewayAnchor ; //set to TRUE = 1 if anchor address == GATEWAY_ANCHOR_ADDR

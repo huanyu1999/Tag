@@ -877,30 +877,14 @@ void instance_set_replydelay(int delayus) //delay in us
 
     switch (inst->configData.txPreambLength)
     {
-    case DWT_PLEN_4096 :
-        preamblelen = 4096.0f;
-        break;
-    case DWT_PLEN_2048 :
-        preamblelen = 2048.0f;
-        break;
-    case DWT_PLEN_1536 :
-        preamblelen = 1536.0f;
-        break;
-    case DWT_PLEN_1024 :
-        preamblelen = 1024.0f;
-        break;
-    case DWT_PLEN_512  :
-        preamblelen = 512.0f;
-        break;
-    case DWT_PLEN_256  :
-        preamblelen = 256.0f;
-        break;
-    case DWT_PLEN_128  :
-        preamblelen = 128.0f;
-        break;
-    case DWT_PLEN_64   :
-        preamblelen = 64.0f;
-        break;
+    case DWT_PLEN_4096 : preamblelen = 4096.0f; break;
+    case DWT_PLEN_2048 : preamblelen = 2048.0f; break;
+    case DWT_PLEN_1536 : preamblelen = 1536.0f; break;
+    case DWT_PLEN_1024 : preamblelen = 1024.0f; break;
+    case DWT_PLEN_512  : preamblelen = 512.0f; break;
+    case DWT_PLEN_256  : preamblelen = 256.0f; break;
+    case DWT_PLEN_128  : preamblelen = 128.0f; break;
+    case DWT_PLEN_64   : preamblelen = 64.0f; break;
     }
 
     //preamble  = plen * (994 or 1018) depending on 16 or 64 PRF
