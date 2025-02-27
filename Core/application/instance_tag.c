@@ -63,7 +63,6 @@ void tag_enable_rx(uint32 dlyTime)
 void tag_process_rx_timeout(instance_data_t *inst)
 {
     //inst->rxTimeouts ++ ;
-
 #if(DISCOVERY == 1)
     if(inst->twrMode == GREETER)
     {
@@ -559,12 +558,12 @@ int tag_app_run(instance_data_t *inst)
 
         inst->twrMode = INITIATOR;
 
-        dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED); //transmit the frame
-
+        // dwt_starttx(DWT_START_TX_IMMEDIATE | DWT_RESPONSE_EXPECTED); //transmit the frame
+        dwt_starttx(DWT_START_TX_IMMEDIATE);
+        
         inst->testAppState = TA_TX_WAIT_CONF ;       // wait confirmation
         inst->previousState = TA_TXPOLL_WAIT_SEND ;
         instDone = INST_DONE_WAIT_FOR_NEXT_EVENT;   //will use RX FWTO to time out (set above)
-
     }
     break;
 
@@ -604,14 +603,10 @@ int tag_app_run(instance_data_t *inst)
     case TA_TX_WAIT_CONF :
     {
         // printf("TA_TX_WAIT_CONF.");
-        uint32 reg1, reg2;
         event_data_t* dw_event = instance_getevent(11); //get and clear this event
 
         if(dw_event->type != DWT_SIG_TX_DONE) //wait for TX done confirmation
         {
-            // reg1 = dwt_read32bitoffsetreg(0x0f, 0x1);
-            // reg2 = dwt_read32bitoffsetreg(0x019, 0x1);
-            // printf(" %08x \r\n", reg1);
             instDone = INST_DONE_WAIT_FOR_NEXT_EVENT;
             break;
         }
@@ -633,7 +628,7 @@ int tag_app_run(instance_data_t *inst)
             {
                 uint64 tagCalculatedFinalTxTime ;
                 // Embed into Final message: 40-bit pollTXTime,  40-bit respRxTime,  40-bit finalTxTime
-                tagCalculatedFinalTxTime =  (inst->txu.txTimeStamp + inst->pollTx2FinalTxDelay) & MASK_TXDTS;
+                tagCalculatedFinalTxTime = (inst->txu.txTimeStamp + inst->pollTx2FinalTxDelay) & MASK_TXDTS;
 
                 inst->delayedTRXTime32h = tagCalculatedFinalTxTime >> 8; //high 32-bits
                 // Calculate Time Final message will be sent and write this field of Final message
@@ -642,12 +637,14 @@ int tag_app_run(instance_data_t *inst)
                 // getting antenna delay from the device and add it to the Calculated TX Time
                 tagCalculatedFinalTxTime = tagCalculatedFinalTxTime + inst->txAntennaDelay;
                 tagCalculatedFinalTxTime &= MASK_40BIT;
-
+                
                 // Write Calculated TX time field of Final message
                 memcpy(&(inst->msg_f.messageData[FTXT]), (uint8 *)&tagCalculatedFinalTxTime, 5);
                 // Write Poll TX time field of Final message
                 memcpy(&(inst->msg_f.messageData[PTXT]), (uint8 *)&inst->txu.tagPollTxTime, 5);
+                
             }
+            dwt_rxenable(DWT_START_RX_DELAYED);
 
             inst->testAppState = TA_RX_WAIT_DATA ;    // After sending, tag expects response/report, anchor waits to receive a final/new poll
 
@@ -809,7 +806,7 @@ int tag_app_run(instance_data_t *inst)
 
         default :
         {
-            if(message)         // == DWT_SIG_TX_DONE)
+            if(message)         // == DWT_SIG_TX_DONE)          // 进入该状态意味着什么
             {
                 instDone = INST_DONE_WAIT_FOR_NEXT_EVENT;
             }

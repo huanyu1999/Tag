@@ -2242,7 +2242,7 @@ void dwt_isr(void)
         if(pdw1000local->cbRxOk != NULL)
         {
             pdw1000local->cbRxOk(&pdw1000local->cbData);
-            printf("cbRxOk\r\n");
+            printf("RXOK\r\n");
         }
 
         if (pdw1000local->dblbuffon)
@@ -2272,7 +2272,7 @@ void dwt_isr(void)
         if(pdw1000local->cbTxDone != NULL)
         {
             pdw1000local->cbTxDone(&pdw1000local->cbData);
-            printf("cbTxDone\r\n");
+            printf("TXDONE\r\n");
         }
     }
 
@@ -2293,7 +2293,7 @@ void dwt_isr(void)
         if(pdw1000local->cbRxTo != NULL)
         {
             pdw1000local->cbRxTo(&pdw1000local->cbData);
-            printf("cbRxTo\r\n");
+            printf("RxTo\r\n");
         }
     }
 
@@ -2314,7 +2314,7 @@ void dwt_isr(void)
         if(pdw1000local->cbRxErr != NULL)
         {
             pdw1000local->cbRxErr(&pdw1000local->cbData);
-            printf("cbRxErr\r\n");
+            printf("RxErr\r\n");
         }
     }
 }

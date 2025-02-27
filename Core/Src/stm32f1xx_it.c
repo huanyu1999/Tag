@@ -20,6 +20,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "stm32f1xx_it.h"
+#include <stdio.h>
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 /* USER CODE END Includes */
@@ -51,6 +52,10 @@
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+//extern uint32_t _estack;  // 栈的结束地址（由链接脚本定义）
+//#define STACK_SIZE 0x400  // 栈的大小（与链接脚本中的_Min_Stack_Size一致）
+//#define STACK_END ((uint32_t)&_estack)
+//#define STACK_START (STACK_END - STACK_SIZE)
 
 /* USER CODE END 0 */
 
@@ -86,6 +91,41 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
+//    printf("Hard Fault Detected!\n");
+
+//    // 读取硬件错误寄存器
+//    uint32_t hfsr = SCB->HFSR;
+//    uint32_t cfsr = SCB->CFSR;
+//    uint32_t bfar = SCB->BFAR;
+//    uint32_t msp = __get_MSP();  // 主栈指针
+//    uint32_t psp = __get_PSP();  // 进程栈指针
+
+//    printf("HFSR: 0x%08lX\n", hfsr);
+//    printf("CFSR: 0x%08lX\n", cfsr);
+//    printf("BFAR: 0x%08lX\n", bfar);
+//    printf("MSP: 0x%08lX\n", msp);
+//    printf("PSP: 0x%08lX\n", psp);
+
+//    // 分析错误原因
+//    if (cfsr & (1 << 7)) {
+//        printf("Memory Management Fault: Invalid address access.\n");
+//    }
+//    if (cfsr & (1 << 15)) {
+//        printf("Bus Fault: Invalid memory access.\n");
+//    }
+//    if (cfsr & (1 << 16)) {
+//        printf("Usage Fault: Undefined instruction or invalid state.\n");
+//    }
+
+//    uint32_t msp = __get_MSP();
+//    uint32_t psp = __get_PSP();
+
+//    if (msp < STACK_START || msp > STACK_END) {
+//        printf("Main Stack Pointer (MSP) out of range: 0x%08lX\n", msp);
+//    }
+//    if (psp < STACK_START || psp > STACK_END) {
+//        printf("Process Stack Pointer (PSP) out of range: 0x%08lX\n", psp);
+//    }
 
   /* USER CODE END HardFault_IRQn 0 */
   while (1)

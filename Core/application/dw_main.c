@@ -166,16 +166,7 @@ uint32 init_uwbApplication(void)
         dwt_forcetrxoff();
     }
 
-    instance_config(&uwb_config[1], &sf_config[1]);
-
-    // 因为当前板子引脚分配，dw1000中断脚为PC13，复位引脚为PC14，共用一个中断处理，在setup_DW1000RSTnIRQ中会关闭该中断，因此在这里重新打开。
-    HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
-
-    // 初始化距离排序数组
-    for(int i = 0; i < MAX_TAG_LIST_SIZE; i++)
-    {
-        sort_distance[i] = 2000000;
-    }
+    instance_config(&uwb_config[0], &sf_config[1]);
 
     return dev_id;
 }
@@ -238,14 +229,10 @@ int dw_main(void)
         }
 
         rx = instance_newrange();
-        if(rx == TOF_REPORT_NUL)
+        if(rx != TOF_REPORT_NUL)
         {
-            // 打印调试用
-            // printf_use_dma("range failed.\r\n");
-            led_toggle(RUN_LED2);
+            printf_use_dma("range .\r\n");              // 打印调试用
         }
-        // led_toggle(RUN_LED2);
-        // printf_use_dma("fafjalkgjal;j;ajl;hk\r\n");
     }
     return 0;
 }

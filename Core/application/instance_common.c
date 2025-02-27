@@ -49,7 +49,7 @@ instance_data_t* instance_get_local_structure_ptr(unsigned int x)
         return NULL;
     }
 
-    return &instance_data[x];
+    return instance_data;
 }
 
 
