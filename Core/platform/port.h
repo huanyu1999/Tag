@@ -27,7 +27,7 @@ extern "C" {
 #include "stm32f1xx_hal.h"
 
 /* SPI1 read temp buffer. */
-#define BUFFLEN     (64)   //(4096+128)
+#define BUFFLEN     (128)
 #define BUF_SIZE    (64)
 
 typedef uint64_t        uint64;

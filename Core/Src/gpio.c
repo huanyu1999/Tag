@@ -54,6 +54,7 @@ void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(BEE_GPIO_Port, BEE_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : PAPin PAPin PAPin */
   // GPIO_InitStruct.Pin = DW1000_RSTn_Pin|RUN_LED1_Pin|RUN_LED2_Pin;
@@ -63,6 +64,13 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : ADC_LOW_Pin */
+  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  
   /*Configure GPIO pin : PtPin */
   GPIO_InitStruct.Pin = DW1000_IRQ_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
@@ -88,7 +96,7 @@ void MX_GPIO_Init(void)
   HAL_GPIO_Init(BeeCtrl_KEY_GPIO_Port, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(EXTI0_IRQn, 1, 0);
   HAL_NVIC_EnableIRQ(EXTI0_IRQn);
   
   HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);

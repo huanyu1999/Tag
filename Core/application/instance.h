@@ -25,8 +25,8 @@
 
 #define SOFTWARE_VER                   "V1"
 
-#define MAX_AHCHOR_NUMBER               3       // 系统内最大基站数量，取4或者8，比如实际3个取4，实际6个取8
-#define MAX_TAG_NUMBER                  40      // 设置最大标签个数
+#define MAX_AHCHOR_NUMBER               2       // 系统内最大基站数量，取4或者8，比如实际3个取4，实际6个取8
+#define MAX_TAG_NUMBER                  50      // 设置最大标签个数
 
 /* 天线延时
  * 计算距离结果比实际距离小，需要增大距离，则减小这个数
@@ -43,7 +43,9 @@
 #define TX_POWER                        0X9c9c9c9c
 #endif
 
-#define MAX_TAG_LIST_SIZE       (MAX_TAG_NUMBER)  
+#define MAX_TAG_LIST_SIZE       (MAX_TAG_NUMBER)
+#define MASK_40BIT              (0x00FFFFFFFFFF)  // DW1000 counter is 40 bits
+#define MASK_TXDTS              (0x00FFFFFFFE00)  // The TX timestamp will snap to 8 ns resolution - mask lower 9 bits.
 
 /* 数据帧超时及延时时间*/
 #define PRE_TIMEOUT                     5
@@ -51,6 +53,10 @@
 #if (MAX_AHCHOR_NUMBER == 3)
 #define ONE_SLOT_TIME_MS_110K           28
 #define ONE_SLOT_TIME_MS_850K           12
+#define ONE_SLOT_TIME_MS_6P8M           9
+#elif (MAX_AHCHOR_NUMBER == 2)
+#define ONE_SLOT_TIME_MS_110K           28
+#define ONE_SLOT_TIME_MS_850K           8       // 一个标签同多基站通信完成所需要的时间
 #define ONE_SLOT_TIME_MS_6P8M           9
 #elif (MAX_AHCHOR_NUMBER == 8)
 #define ONE_SLOT_TIME_MS_110K           50
@@ -73,14 +79,15 @@
 #define TAG_FINALE_SEND_BACK_110K       1080    //110K通信速率下，标签延后发送FINAL消息时间
 
 #define FINAL_RX_TIMEOUT_850K           1300
-#define RESP_RX_TIMEOUT_850K            1000     
-#define FIRST_RESP_SEND_850K            1250     //850K通信速率下，第一个resp消息发送延时
-#define DATA_INTERVAL_TIME_850K         1650    //850K通信速率下，相邻消息间隔时间
+#define RESP_RX_TIMEOUT_850K            1000
+#define FIRST_RESP_SEND_850K            1300    //850K通信速率下，第一个resp消息发送延时
+#define DATA_INTERVAL_TIME_850K         1600    //850K通信速率下，相邻消息间隔时间
 #define ANC_RESP_SEND_BACK_850K         300     //850K通信速率下，基站延后发送RESP消息时间
 #define TAG_FINALE_SEND_BACK_850K       300     //850K通信速率下，标签延后发送FINAL消息时间
 
 #define MAX_POLL_SEND_SLEEP_COUNT       150     //MAX_POLL_SEND_SLEEP_COUNT次发送后无运动则进入休眠
 #define ANC_RANGE_COUNT                 5       //自标定时每个基站测距次数
+
 /* PAN ID */
 #define PAN_ID                          0xDECA
 
@@ -92,10 +99,10 @@
 #define RX_TIMEOUT                      2
 #define RX_ERROR                        3
 
-/* 数据帧长度 */
+/* 数据帧长度，一定要留够空间，不然测距异常 */
 #define POLL_MSG_LEN                    26
 #define RESP_MSG_LEN                    19
-#define FIANL_MSG_LEN                   (20 + 5 * MAX_AHCHOR_NUMBER)
+#define FIANL_MSG_LEN                   (22 + 5 * MAX_AHCHOR_NUMBER + 10)
 #define BLINK_MSG_LEN                   10
 #define INIT_MSG_LEN                    12
 #define SYNC_MSG_LEN                    15
@@ -107,35 +114,45 @@
 #define SENDER_SHORT_ADD_IDX            7
 #define FUNC_CODE_IDX                   9
 #define RANGE_NB_IDX                    10
+
 #define POLL_MSG_SOS_IDX                11
 #define POLL_MSG_ALARM_STA_IDX          12
 #define POLL_MSG_BATTERY_IDX            13
 #define POLL_MSG_USER_IDX               14
+
 #define RESP_MSG_SLEEP_COR_IDX          11
 #define RESP_MSG_PREV_DIS_IDX           13
 #define RESP_MSG_ALARM_IDX              17
 #define RESP_MSG_GROUP_IDX              18
-#define INIT_MSG_SLEEP_COR_IDX          10
+
+// #define INIT_MSG_SLEEP_COR_IDX          10
+
 #define FINAL_MSG_FINAL_VALID_IDX       11
 #define FINAL_MSG_POLL_TX_TS_IDX        12
-#define FINAL_MSG_FINAL_TX_TS_IDX       16
-#define FINAL_MSG_A0_GROUP_ID_IDX       20
-#define FINAL_MSG_A1_GROUP_ID_IDX       25
-#define FINAL_MSG_A2_GROUP_ID_IDX       30
-#define FINAL_MSG_A3_GROUP_ID_IDX       35
-#define FINAL_MSG_A4_GROUP_ID_IDX       40
-#define FINAL_MSG_A5_GROUP_ID_IDX       45
-#define FINAL_MSG_A6_GROUP_ID_IDX       50
-#define FINAL_MSG_A7_GROUP_ID_IDX       44
-#define FINAL_MSG_RESP1_RX_TS_IDX       21
-#define FINAL_MSG_RESP2_RX_TS_IDX       26
-#define FINAL_MSG_RESP3_RX_TS_IDX       31
-#define FINAL_MSG_RESP4_RX_TS_IDX       36
-#define FINAL_MSG_RESP5_RX_TS_IDX       41
-#define FINAL_MSG_RESP6_RX_TS_IDX       46
-#define FINAL_MSG_RESP7_RX_TS_IDX       51
-#define FINAL_MSG_RESP8_RX_TS_IDX       56
-#define SYNC_MSG_TIME_IDX               10
+#define FINAL_MSG_FINAL_TX_TS_IDX       17
+#define FINAL_MSG_A0_GROUP_ID_IDX       22
+#define FINAL_MSG_RESP1_RX_TS_IDX       23
+#define FINAL_MSG_RESP2_RX_TS_IDX       28
+// #define FINAL_MSG_A0_GROUP_ID_IDX       20
+// #define FINAL_MSG_RESP1_RX_TS_IDX       21
+// #define FINAL_MSG_RESP2_RX_TS_IDX       26
+
+
+// #define FINAL_MSG_RESP3_RX_TS_IDX       31
+// #define FINAL_MSG_RESP4_RX_TS_IDX       36
+// #define FINAL_MSG_RESP5_RX_TS_IDX       41
+// #define FINAL_MSG_RESP6_RX_TS_IDX       46
+// #define FINAL_MSG_RESP7_RX_TS_IDX       51
+// #define FINAL_MSG_RESP8_RX_TS_IDX       56
+
+// #define SYNC_MSG_TIME_IDX               10
+// #define FINAL_MSG_A1_GROUP_ID_IDX       25
+// #define FINAL_MSG_A2_GROUP_ID_IDX       30
+// #define FINAL_MSG_A3_GROUP_ID_IDX       35
+// #define FINAL_MSG_A4_GROUP_ID_IDX       40
+// #define FINAL_MSG_A5_GROUP_ID_IDX       45
+// #define FINAL_MSG_A6_GROUP_ID_IDX       50
+// #define FINAL_MSG_A7_GROUP_ID_IDX       44
 
 
 /*  function code */
@@ -230,7 +247,11 @@ extern uint8_t battery;
 extern uint8_t USE_IMU;
 extern int user_data[10];
 extern uint32_t distance_flag;
+extern int lost_flag;
 extern uint32_t right_work;  //正常工作
+
+extern volatile uint8_t dw1000_spiDmaCpltFlag;
+extern volatile uint8_t dw1000_spiDmaBusyFlag;
 
 #if defined(ANCRANGE)
 extern uint8_t temp_dev_id;
@@ -250,13 +271,10 @@ void tag_rx_to_cb(const dwt_cb_data_t *cb_data);
 void tag_rx_err_cb(const dwt_cb_data_t *cb_data);
 void tag_tx_conf_cb(const dwt_cb_data_t *cb_data);
 
-
 void anc_rx_ok_cb(const dwt_cb_data_t *cb_data);
 void anc_rx_to_cb(const dwt_cb_data_t *cb_data);
 void anc_rx_err_cb(const dwt_cb_data_t *cb_data);
 void anc_tx_conf_cb(const dwt_cb_data_t *cb_data);
-
-
 
 void delay500ms(void);
 #endif

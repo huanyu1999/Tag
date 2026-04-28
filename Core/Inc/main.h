@@ -47,7 +47,8 @@ extern "C" {
 
 /* Exported macro ------------------------------------------------------------*/
 /* USER CODE BEGIN EM */
-
+#define USE_DW1000_SPI_DMA 1
+#define USE_DW1000_SPI_BLOCK 0
 /* USER CODE END EM */
 
 /* Exported functions prototypes ---------------------------------------------*/
@@ -58,7 +59,7 @@ extern uint8_t bee_flag;
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
-#define DW1000_RSTn_Pin GPIO_PIN_0
+#define DW1000_RSTn_Pin GPIO_PIN_12
 #define DW1000_RSTn_GPIO_Port GPIOA
 #define RUN_LED1_Pin GPIO_PIN_1
 #define RUN_LED1_GPIO_Port GPIOA

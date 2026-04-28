@@ -35,6 +35,9 @@ Examples/
 JLinkLog.txt
 *.dbgconf
 
+#CMSIS-DAP debug logs
+*.log
+
 #Vscode file
 *.json
 .vscode

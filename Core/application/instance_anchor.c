@@ -55,14 +55,11 @@ void anchor_app(void)
             if(rx_status == RX_OK)                                  //接收到数据
             {
                 rx_status = RX_WAIT;
-                {
-                    state = STA_RECV_POLL_SYNC;
-                }
+                state = STA_RECV_POLL_SYNC;
             }
             else if((rx_status == RX_TIMEOUT) || (rx_status == RX_ERROR))  //接收数据错误，重新开启接收
             {
                 state = STA_INIT_POLL_SYNC;
-                //led_toggle(LED1);
             }
 #if defined (ANCRANGE) //设置基站间测距模式开启 1=开始 2=运行中 0=停止
             static uint32_t next_sync_time = 0;                     //基站A0下次广播并启动测距的时间
@@ -133,19 +130,20 @@ void anchor_app(void)
                 range_nb = rx_buffer[RANGE_NB_IDX];             //取range_nb，resp发送时发送相同的range_nb
                 recv_tag_id = rx_buffer[SENDER_SHORT_ADD_IDX];  //取发送标签的ID
                 sos = rx_buffer[POLL_MSG_SOS_IDX];
-                if(sos > 1){sos = 0;}
+                if(sos > 1)
+                {
+                    sos = 0;
+                }
                 // battery = rx_buffer[POLL_MSG_BATTERY_IDX];
                 if(recv_tag_id >= inst_slot_number)             //标签ID如果大于标签总容量则退出
                 {
                     state = STA_INIT_POLL_SYNC;
                     break;
                 }
-                
                 for(int i = 0; i < 10; i++)  //接收用户字节
                 {
                     user_data[i] = rx_buffer[POLL_MSG_USER_IDX + i];
                 }
-
                 range_time = portGetTickCnt();       //取得测距时间
                 poll_rx_ts = get_rx_timestamp_u64(); //获得poll_rx时间戳
 
@@ -168,9 +166,9 @@ void anchor_app(void)
                 }
                 sys_time_diff = HAL_GetTick() - sync_time;  //时间同步
                 range_nb = 0;
-                ancrange_flag = 1; //设置基站间测距模式开启 1=开始 2=运行中 0=停止
-                instance_mode = TAG;  //切换当前角色控制为标签
-                temp_dev_id = dev_id; //备份当前ID
+                ancrange_flag = 1;      //设置基站间测距模式开启 1=开始 2=运行中 0=停止
+                instance_mode = TAG;    //切换当前角色控制为标签
+                temp_dev_id = dev_id;   //备份当前ID
                 dev_id = 0;
                 ancrange_count = ANC_RANGE_COUNT;
                 set_instance();
@@ -196,23 +194,22 @@ void anchor_app(void)
                 }
                 else//当前该基站需接收resp
                 {
-                   
                    dwt_enableframefilter(DWT_FF_NOTYPE_EN); //关闭帧过滤，能够接收所有数据
 
                     //设置resp数据接收机开启时间
                     uint64_t resp_rx_time;
                     if(inst_dataRate == DWT_BR_110K)
-
+                    {
                         resp_rx_time = (poll_rx_ts + ((FIRST_RESP_SEND_110K + (MAX_AHCHOR_NUMBER - sr) * inst_data_interval) * UUS_TO_DWT_TIME));
-
+                    }
                     else if(inst_dataRate == DWT_BR_6M8)
-
+                    {
                         resp_rx_time = (poll_rx_ts + ((FIRST_RESP_SEND_6P8M + (MAX_AHCHOR_NUMBER - sr) * inst_data_interval) * UUS_TO_DWT_TIME));
-
+                    }
                     else if(inst_dataRate == DWT_BR_850K)
-
+                    {
                         resp_rx_time = (poll_rx_ts + ((FIRST_RESP_SEND_850K + (MAX_AHCHOR_NUMBER - sr) * inst_data_interval) * UUS_TO_DWT_TIME));
-
+                    }
                     resp_rx_time = resp_rx_time >> 8;
                     dwt_setdelayedtrxtime(resp_rx_time);         //设置接收机开启延时时间
                     dwt_setrxtimeout(inst_resp_rx_timeout);      //设置接收数据超时时间
@@ -231,7 +228,6 @@ void anchor_app(void)
             else//准备接收final
             {      
                //final数据的接收机开启时间，提前100us开启
-
                 uint64_t final_rx_time = (poll_rx_ts + inst_poll2final_time);              
                 final_rx_time = final_rx_time >> 8;
                 dwt_setdelayedtrxtime((uint32)final_rx_time);  //设置接收机开启延时时间

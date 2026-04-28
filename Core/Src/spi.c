@@ -26,6 +26,8 @@
 
 SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi2;
+DMA_HandleTypeDef hdma_spi1_tx;
+DMA_HandleTypeDef hdma_spi1_rx;
 
 /* SPI1 init function */
 void MX_SPI1_Init(void)
@@ -127,6 +129,50 @@ void HAL_SPI_MspInit(SPI_HandleTypeDef* spiHandle)
     HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /* USER CODE BEGIN SPI1_MspInit 1 */
+#if USE_DW1000_SPI_DMA
+    // spi1 tx dma channel
+    __HAL_RCC_DMA1_CLK_ENABLE();
+    
+    hdma_spi1_tx.Instance                 = DMA1_Channel3;
+    hdma_spi1_tx.Init.Direction           = DMA_MEMORY_TO_PERIPH;
+    hdma_spi1_tx.Init.PeriphInc           = DMA_PINC_DISABLE;
+    hdma_spi1_tx.Init.MemInc              = DMA_MINC_ENABLE;
+    hdma_spi1_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_spi1_tx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
+    hdma_spi1_tx.Init.Mode                = DMA_NORMAL;
+    hdma_spi1_tx.Init.Priority            = DMA_PRIORITY_VERY_HIGH;
+    
+    HAL_DMA_Init(&hdma_spi1_tx);
+    __HAL_LINKDMA(spiHandle, hdmatx, hdma_spi1_tx);
+    
+    // spi1 rx dma channel
+    hdma_spi1_rx.Instance                 = DMA1_Channel2;
+    hdma_spi1_rx.Init.Direction           = DMA_PERIPH_TO_MEMORY;
+    hdma_spi1_rx.Init.PeriphInc           = DMA_PINC_DISABLE;
+    hdma_spi1_rx.Init.MemInc              = DMA_MINC_ENABLE;
+    hdma_spi1_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
+    hdma_spi1_rx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
+    hdma_spi1_rx.Init.Mode                = DMA_NORMAL;
+    hdma_spi1_rx.Init.Priority            = DMA_PRIORITY_VERY_HIGH;
+
+    HAL_DMA_Init(&hdma_spi1_rx);
+    __HAL_LINKDMA(spiHandle, hdmarx, hdma_spi1_rx);
+    /*
+        SPI DMA收发中断的优先级设置需要注意，由于DMA收发时，会与dw1000外部中断有一个先后关系，
+        举例：
+            RXFCG事件，dw1000先接收帧，结尾CRC校验通过触发中断处理，中断处理中就有多次SPI DMA读取，DMA完成也要调用中断处理，
+            所以如果DMA中断优先级比dw1000外部中断低的话，DMA完成中断无法触发，就会导致读取处理后，一直等待dma完成标志位置位，程序卡住。
+            TXFRS事件同理
+            
+            AI给出的解释 在 ISR 内阻塞等待 DMA 完成 = CPU 被锁死 → DMA 完成中断永远得不到执行机会，还算符合
+    */
+    
+    HAL_NVIC_SetPriority(DMA1_Channel3_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(DMA1_Channel3_IRQn);
+    
+    HAL_NVIC_SetPriority(DMA1_Channel2_IRQn, 0, 0);
+    HAL_NVIC_EnableIRQ(DMA1_Channel2_IRQn); 
+#endif
 
   /* USER CODE END SPI1_MspInit 1 */
   }
@@ -207,5 +253,6 @@ void HAL_SPI_MspDeInit(SPI_HandleTypeDef* spiHandle)
 }
 
 /* USER CODE BEGIN 1 */
+
 
 /* USER CODE END 1 */

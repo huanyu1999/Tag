@@ -7,7 +7,7 @@ uint8_t group_id;                                       //组ID
 uint8_t anc_id;                                         //如当前角色是基站，则表示当前基站ID
 uint8_t tag_id;                                         //如当前角色是标签，则表示当前标签ID
 uint8_t state = STA_IDLE;                               //状态机状态控制
-int32_t distance_report[8];             //基站测距值数组，用于打包输出
+int32_t distance_report[8];                             //基站测距值数组，用于打包输出
 int32_t group_report[8];                                //基站组ID数组，用于打包输出
 uint32_t range_time;                                    //测距产生时间，串口打包发送
 uint8_t frame_seq_nb = 0;                               //每帧数据增加1
@@ -31,95 +31,124 @@ uint16 ant_dly = ANT_DLY;                               //天线延时
 uint32 tx_power;                                        //发射增益代码
 uint8_t UART_RX_BUF[200];                               //串口接收BUF
 uint32_t uart_rx_len;                                   //串口接收数据长度
-// vec3d anchorArray[8];                                   //基站坐标，用于标签解算自身位置
+// vec3d anchorArray[8];                                //基站坐标，用于标签解算自身位置
 double distance_now_m;                                  //基站计算本周期测距结果，单位米
 int32 distance_offset_cm;                               //距离校准，单位cm
 uint8_t sos = 0;
 uint8_t alarm = 0;
 int user_data[10];
 uint32_t distance_flag = 0;								//判断蜂鸣器和灯标志位
+int lost_flag = 0;										//失联标志位
 /* 没有板载EEPROM */
 uint8_t USE_EEPROM = 0;  
 
-uint32_t right_work = 0;
+#define TAG_ID 0x1D
 
+/*******************************************************SPI DMA 读写完成标志********************************************************/
+volatile uint8_t dw1000_spiDmaCpltFlag = 0;
+volatile uint8_t dw1000_spiDmaBusyFlag = 0;
 
 /*******************************************************函数声明********************************************************/
 void parse_uart(uint8_t* data);
 void read_anc_coord(void);
 void print_config(void);
 
+/* dw1000 rf 配置  */
+static dwt_config_t uwb_config_channel5[7] = {
+    {   /* uwb_config0，channel5 脉冲频率64M 前导码长度256 数据率 850K，该配置还算稳定，先前一直长期使用 */
+        .chan = 5,
+        .prf = DWT_PRF_64M,
+        .txPreambLength = DWT_PLEN_256,
+        .rxPAC = DWT_PAC16,
+        .txCode = 10,
+        .rxCode = 10,
+        .nsSFD = 1,
+        .dataRate = DWT_BR_850K,
+        .phrMode = DWT_PHRMODE_STD,
+        .sfdTO = (257 + DW_NS_SFD_LEN_850K - 16)
+    }, 
+    {    /* uwb_config1，channel5 脉冲频率64M 前导码长度512 数据率 850K */
+        .chan = 5,
+        .prf = DWT_PRF_64M,
+        .txPreambLength = DWT_PLEN_512,
+        .rxPAC = DWT_PAC16,
+        .txCode = 10,
+        .rxCode = 10,
+        .nsSFD = 1,
+        .dataRate = DWT_BR_850K,
+        .phrMode = DWT_PHRMODE_STD,
+        .sfdTO = (513 + DW_NS_SFD_LEN_850K - 16)
+    },
+    {   /* uwb_config2，channel5 脉冲频率64M 前导码长度1024 数据率 850K */
+        .chan = 5,
+        .prf = DWT_PRF_64M,
+        .txPreambLength = DWT_PLEN_1024,
+        .rxPAC = DWT_PAC32,
+        .txCode = 10,
+        .rxCode = 10,
+        .nsSFD = 1,
+        .dataRate = DWT_BR_850K,
+        .phrMode = DWT_PHRMODE_STD,
+        .sfdTO = (1025 + DW_NS_SFD_LEN_850K - 32)
+    },
+    {    /* uwb_config3，channel5 脉冲频率64M 前导码长度128 数据率 6M8 */
+        .chan = 5,
+        .prf = DWT_PRF_64M,
+        .txPreambLength = DWT_PLEN_128,
+        .rxPAC = DWT_PAC8,
+        .txCode = 10,
+        .rxCode = 10,
+        .nsSFD = 1,
+        .dataRate = DWT_BR_6M8,
+        .phrMode = DWT_PHRMODE_STD,
+        .sfdTO = (129 + DW_NS_SFD_LEN_6M8 - 8)
+    }, 
+    {    /* uwb_config4，channel5 脉冲频率64M 前导码长度256 数据率 6M8 */
+        .chan = 5,
+        .prf = DWT_PRF_64M,
+        .txPreambLength = DWT_PLEN_256,
+        .rxPAC = DWT_PAC16,
+        .txCode = 10,
+        .rxCode = 10,
+        .nsSFD = 1,
+        .dataRate = DWT_BR_6M8,
+        .phrMode = DWT_PHRMODE_STD,
+        .sfdTO = (257 + DW_NS_SFD_LEN_6M8 - 16)
+    }, 
+    {    /* uwb_config5，channel5 脉冲频率64M 前导码长度1024 数据率 110K */
+        .chan = 5,
+        .prf = DWT_PRF_64M,
+        .txPreambLength = DWT_PLEN_1024,
+        .rxPAC = DWT_PAC32,
+        .txCode = 10,
+        .rxCode = 10,
+        .nsSFD = 1,
+        .dataRate = DWT_BR_110K,
+        .phrMode = DWT_PHRMODE_STD,
+        .sfdTO = (1025 + DW_NS_SFD_LEN_110K - 32)
+    }, 
+    {    /* uwb_config6，channel5 脉冲频率64M 前导码长度2048 数据率 110K， 测试近距离都丢包严重 */
+        .chan = 5,
+        .prf = DWT_PRF_64M,
+        .txPreambLength = DWT_PLEN_2048,
+        .rxPAC = DWT_PAC64,
+        .txCode = 10,
+        .rxCode = 10,
+        .nsSFD = 1,
+        .dataRate = DWT_BR_110K,
+        .phrMode = DWT_PHRMODE_STD,
+        .sfdTO = (2049 + DW_NS_SFD_LEN_110K - 64)
+    }, 
+};
+
+static dwt_txconfig_t txconfig_options = {
+    .PGdly = 0XC2,            /* PG delay */
+    .power = TX_POWER         /* TX power */
+};
+
 void DW1000_init(void)
 {
-    static dwt_config_t config1 = {             //6.8M
-        .chan = 2,                              /* Channel number. */
-        .prf = DWT_PRF_64M,                     /* Pulse repetition frequency. */
-        .txPreambLength = DWT_PLEN_128,          /* Preamble length. Used in TX only. */
-        .rxPAC = DWT_PAC8,                      /* Preamble acquisition chunk size. Used in RX only. */
-        .txCode = 10,                           /* TX preamble code. Used in TX only. */
-        .rxCode = 10,                           /* RX preamble code. Used in RX only. */
-        .nsSFD = 1,                             /* 0 to use standard SFD, 1 to use non-standard SFD. */
-        .dataRate = DWT_BR_6M8,                 /* Data rate. */
-        .phrMode = DWT_PHRMODE_STD,             /* PHY header mode. */
-        .sfdTO = (129 + DW_NS_SFD_LEN_6M8 - 8)   /* SFD timeout (preamble length + 1 + SFD length - PAC size). Used in RX only. */
-    };
-
-    static dwt_config_t config2 = {         //110K
-        .chan = 2,                                          /* Channel number. */
-        .prf = DWT_PRF_64M,                                 /* Pulse repetition frequency. */
-        .txPreambLength = DWT_PLEN_1024,                     /* Preamble length. Used in TX only. */
-        .rxPAC = DWT_PAC32,                                 /* Preamble acquisition chunk size. Used in RX only. */
-        .txCode = 10,                                       /* TX preamble code. Used in TX only. */
-        .rxCode = 10,                                       /* RX preamble code. Used in RX only. */
-        .nsSFD = 1,                                         /* 0 to use standard SFD, 1 to use non-standard SFD. */
-        .dataRate = DWT_BR_110K,                            /* Data rate. */
-        .phrMode = DWT_PHRMODE_STD,                         /* PHY header mode. */
-        .sfdTO = (1025 + DW_NS_SFD_LEN_110K - 32)           /* SFD timeout (preamble length + 1 + SFD length - PAC size). Used in RX only. */
-    };
-    
-    static dwt_config_t config3 = {
-         .chan = 2,                                  /* Channel number. */
-         .prf = DWT_PRF_64M,                         /* Pulse repetition frequency. */
-         .txPreambLength = DWT_PLEN_256,             /* Preamble length. Used in TX only. */
-         .rxPAC = DWT_PAC16,                         /* Preamble acquisition chunk size. Used in RX only. */
-         .txCode = 9,                                /* TX preamble code. Used in TX only. */
-         .rxCode = 9,                                /* RX preamble code. Used in RX only. */
-         .nsSFD = 1,                                 /* 0 to use standard SFD, 1 to use non-standard SFD. */
-         .dataRate = DWT_BR_850K,                    /* Data rate. */
-         .phrMode = DWT_PHRMODE_STD,                 /* PHY header mode. */
-         .sfdTO = (257 + DW_NS_SFD_LEN_850K - 16)    /* SFD timeout (preamble length + 1 + SFD length - PAC size). Used in RX only. */
-    };
-    
-    static dwt_config_t config4 = {
-         .chan = 5,                                  /* Channel number. */
-         .prf = DWT_PRF_64M,                         /* Pulse repetition frequency. */
-         .txPreambLength = DWT_PLEN_128,             /* Preamble length. Used in TX only. */
-         .rxPAC = DWT_PAC8,                         /* Preamble acquisition chunk size. Used in RX only. */
-         .txCode = 10,                                /* TX preamble code. Used in TX only. */
-         .rxCode = 10,                                /* RX preamble code. Used in RX only. */
-         .nsSFD = 1,                                 /* 0 to use standard SFD, 1 to use non-standard SFD. */
-         .dataRate = DWT_BR_6M8,                    /* Data rate. */
-         .phrMode = DWT_PHRMODE_STD,                 /* PHY header mode. */
-         .sfdTO = (129 + DW_NS_SFD_LEN_6M8 - 8)    /* SFD timeout (preamble length + 1 + SFD length - PAC size). Used in RX only. */
-    };
-    
-    static dwt_config_t config5 = {             //6.8M
-         .chan = 5,                                  /* Channel number. */
-         .prf = DWT_PRF_64M,                         /* Pulse repetition frequency. */
-         .txPreambLength = DWT_PLEN_256,             /* Preamble length. Used in TX only. */
-         .rxPAC = DWT_PAC16,                         /* Preamble acquisition chunk size. Used in RX only. */
-         .txCode = 10,                                /* TX preamble code. Used in TX only. */
-         .rxCode = 10,                                /* RX preamble code. Used in RX only. */
-         .nsSFD = 1,                                 /* 0 to use standard SFD, 1 to use non-standard SFD. */
-         .dataRate = DWT_BR_850K,                    /* Data rate. */
-         .phrMode = DWT_PHRMODE_STD,                 /* PHY header mode. */
-         .sfdTO = (257 + DW_NS_SFD_LEN_850K - 16)    /* SFD timeout (preamble length + 1 + SFD length - PAC size). Used in RX only. */
-    };
-
-    static dwt_txconfig_t txconfig_options = {
-        .PGdly = 0XC2,            /* PG delay */
-        .power = TX_POWER         /* TX power */
-    };
+    dwt_config_t *current_rfConfig = &uwb_config_channel5[2];
 
     reset_DW1000();               /* Target specific drive of RSTn line into DW1000 low for a period. */
     port_set_dw1000_slowrate();
@@ -138,9 +167,10 @@ void DW1000_init(void)
     port_set_dw1000_fastrate();
 
     inst_slot_number = MAX_TAG_NUMBER;
-    dwt_configure(&config5);
-    inst_dataRate = config5.dataRate;
-    inst_ch       = config5.chan;
+    
+    dwt_configure(current_rfConfig);
+    inst_dataRate = current_rfConfig->dataRate;
+    inst_ch       = current_rfConfig->chan;
 
     /* 配置通信相关时序 */
     if(inst_dataRate == DWT_BR_6M8)
@@ -254,7 +284,7 @@ void DW1000_init(void)
 #endif
     {
         /* 配置设备ID */
-        dev_id = 0x0D;
+        dev_id = TAG_ID;
     }
 
     //设置中断标志
@@ -300,7 +330,7 @@ void DW1000_init(void)
 
 void dw_main(void)
 {   
-	int lost_flag = 1;
+    int lost_work = 0;
     char distance_report_char[4][40];
     while(1)                                        //测距功能实现，按角色执行基站状态机或标签状态机
     {
@@ -331,7 +361,7 @@ void dw_main(void)
                             (distance_report[1] >= 0) ? distance_report_char[1] : "null", 
                             (distance_report[2] >= 0) ? distance_report_char[2] : "null", 
                             (distance_report[3] >= 0) ? distance_report_char[3] : "null" );
-            led_toggle(RUN_LED2);
+            led_off(RUN_LED2);
             
             if( (float)(distance_report[recv_anc_id] / 1000.0) < MIN_DISTANCE )
             {
@@ -342,20 +372,20 @@ void dw_main(void)
                 distance_flag = 0;
             }
 
-			lost_flag = 0;
-			right_work++;
-			if (right_work == 68) // 正常工作30s响一次
-			{
-				bee_on();
-				
-			}else{
-				bee_close();
-			}
-			
-			if (right_work == 70) 
-			{
-				right_work = 0;
-			}
+			lost_flag = 0; //没有失联
+//			right_work++;
+//			if (right_work == 68) // 正常工作30s响一次
+//			{
+//				bee_on();
+//				
+//			}else{
+//				bee_close();
+//			}
+//			
+//			if (right_work == 70) 
+//			{
+//				right_work = 0;
+//			}
 
         }
         else if(range_status == RANGE_ERROR) 
@@ -369,21 +399,16 @@ void dw_main(void)
                distance_report[i] = -1; 
                group_report[i] = -1; 
             }
-
-			if(lost_flag == 1 || lost_flag == 2 || lost_flag == 3 ) // 失联响两次
+			
+			lost_work++; //没有测到60次为失联
+			if(lost_work == 60)
 			{
-				bee_toggle();
-				lost_flag++;
-			}else
-			{
-				bee_close();
+				lost_flag = 1;
+				lost_work = 0;
 			}
-            led_on(RUN_LED2);
-		
+	
         }
-		
-
-		
+	
     }
 }
 
@@ -429,12 +454,73 @@ void print_config(void)
     HAL_UART_Transmit_DMA(&huart1, &UART_TX_DATA[0], len);
 }
 
-void delay500ms(void){
-	unsigned char i,j,k;
-	for(i=15;i>0;i--)	
-		for(j=202;j>0;j--)
-			for(k=81;k>0;k--);
+void delay500ms(void)
+{
+    unsigned char i,j,k;
+    for(i=15;i>0;i--)
+        for(j=202;j>0;j--)
+            for(k=81;k>0;k--);
 }
+
+void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+    if (hspi->Instance == SPI1)
+    {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET); // DMA发送完成，SPI片选拉高
+        dw1000_spiDmaCpltFlag = 1;
+        dw1000_spiDmaBusyFlag = 0;
+    }
+}
+
+void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+    if (hspi->Instance == SPI1)
+    {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET); // DMA接收完成，SPI片选拉高
+        dw1000_spiDmaCpltFlag = 1;
+        dw1000_spiDmaBusyFlag = 0;
+    }
+}
+
+//static dwt_config_t uwb_config_channel7[] = {
+//    {   /* uwb_config0，channel7 脉冲频率64M 前导码长度128 数据率 6M8 */
+//        .chan = 7,
+//        .prf = DWT_PRF_64M,
+//        .txPreambLength = DWT_PLEN_128,
+//        .rxPAC = DWT_PAC8,
+//        .txCode = 19,
+//        .rxCode = 20,
+//        .nsSFD = 1,
+//        .dataRate = DWT_BR_6M8,
+//        .phrMode = DWT_PHRMODE_STD,
+//        .sfdTO = (129 + DW_NS_SFD_LEN_6M8 - 8)
+//    },
+//    {   /* uwb_config1，channel7 脉冲频率64M 前导码长度256 数据率 6M8 */
+//        .chan = 7,
+//        .prf = DWT_PRF_64M,
+//        .txPreambLength = DWT_PLEN_256,
+//        .rxPAC = DWT_PAC16,
+//        .txCode = 19,
+//        .rxCode = 20,
+//        .nsSFD = 1,
+//        .dataRate = DWT_BR_6M8,
+//        .phrMode = DWT_PHRMODE_STD,
+//        .sfdTO = (257 + DW_NS_SFD_LEN_6M8 - 16)
+//    }, 
+//    {   /* uwb_config2，channel7 脉冲频率64M 前导码长度256 数据率 850K */
+//        .chan = 7,
+//        .prf = DWT_PRF_64M,
+//        .txPreambLength = DWT_PLEN_256,
+//        .rxPAC = DWT_PAC16,
+//        .txCode = 19,
+//        .rxCode = 20,
+//        .nsSFD = 1,
+//        .dataRate = DWT_BR_850K,
+//        .phrMode = DWT_PHRMODE_STD,
+//        .sfdTO = (257 + DW_NS_SFD_LEN_850K - 16)
+//    }, 
+//};
+
 //void read_anc_coord(void)
 //{
 //    char anc_coord_read[56];

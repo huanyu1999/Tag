@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "dma.h"
+#include "adc.h"
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
@@ -60,8 +61,11 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* USER CODE END 0 */
+uint32_t ADC_time = 0; //每过一段时间测量一次电池电压
+uint16_t ADC_value; //AD转换值
+float Real_value; //实际电压值
 
+/* USER CODE END 0 */
 /**
   * @brief  The application entry point.
   * @retval int
@@ -91,16 +95,31 @@ int main(void)
     /* Initialize all configured peripherals */
     MX_GPIO_Init();
     MX_DMA_Init();
+    MX_ADC1_Init();
     MX_USART1_UART_Init();
     MX_SPI1_Init();
 //    MX_SPI2_Init();
     MX_TIM2_Init();
+    MX_TIM3_Init(); //控制ADC
+                        
+    /* USER CODE BEGIN 2 */
+
+    /*****ADC开关*****/
+    HAL_ADC_Start_IT(&hadc1);  
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
+    /*****************/
+
     DW1000_init();
 
+    /*****开机自检****/
+    print_config(); //打印系统参数信息
+    led_on(LED_ALL); 
+    bee_on();
+    HAL_Delay(4000);
 
-    print_config();                     //打印系统参数信息
-    /* USER CODE BEGIN 2 */
+    /*****************/
     dw_main();
+
     /* USER CODE END 2 */
 
     /* Infinite loop */
@@ -109,7 +128,9 @@ int main(void)
     {
     /* USER CODE END WHILE */
     /* USER CODE BEGIN 3 */
-        printf_use_dma("test\n");
+        printf_use_dma("adc_time = %d	Real_value = %lf\r\n",ADC_time, Real_value);
+        Real_value = 0;
+        HAL_Delay(10000);
     }
     /* USER CODE END 3 */
 }
@@ -155,6 +176,14 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+    ADC_value = HAL_ADC_GetValue(&hadc1);
+    Real_value=(float)(ADC_value)/4096*3.3 * 2;//计算实际电压值
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_SET);
+    HAL_ADC_Stop_IT(&hadc1);
+}
+
 
 //TIM定时返回函数
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)//回调函数
@@ -163,18 +192,37 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)//回调函数
     {
         if( distance_flag == 1 ) //
         {
-            led_toggle(RUN_LED1);
+            led_toggle(RUN_LED1); //距离近红灯闪烁
         }else{
-            led_off(RUN_LED1);
-            
+            led_off(RUN_LED1);    
         }
+
         if( bee_flag == 1 && distance_flag == 1 )
         {
-            bee_on();
+            bee_toggle();
         }else{
             bee_close();
         }
+        
+        if( lost_flag == 1 ) //
+        {
+            led_toggle(RUN_LED2); //失联黄灯闪烁
+            bee_close();
+            led_off(RUN_LED1);
+        }else{
+            led_off(RUN_LED2);    
+        }
+    }
 
+    if( htim == &htim3 ) 
+    {
+        ADC_time++;
+        if( ADC_time == 60 )
+        {
+            HAL_ADC_Start_IT(&hadc1);  
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
+            ADC_time = 0;
+        }
     }
 }
 

@@ -2195,7 +2195,7 @@ uint8 dwt_checkirq(void)
 void dwt_isr(void)
 {
     uint32 status = pdw1000local->cbData.status = dwt_read32bitreg(SYS_STATUS_ID); // Read status register low 32bits
-    
+
     // printf_use_dma("status : %#x\n", status);
     // Handle RX good frame event
     if(status & SYS_STATUS_RXFCG)
@@ -3570,96 +3570,3 @@ uint16 dwt_calcpgcount(uint8 pgdly)
     average_count = (int)(sum_count / NUM_SAMPLES);
     return average_count;
 }
-
-
-/*! ------------------------------------------------------------------------------------------------------------------
- * @fn get_tx_timestamp_u64()
- *
- * @brief Get the TX time-stamp in a 64-bit variable.
- *        /!\ This function assumes that length of time-stamps is 40 bits, for both TX and RX!
- *
- * @param  none
- *
- * @return  64-bit value of the read time-stamp.
- */
-uint64_t get_tx_timestamp_u64(void)
-{
-    uint8_t ts_tab[5];
-    uint64_t ts = 0;
-    int8_t i;
-    dwt_readtxtimestamp(ts_tab);
-    for (i = 4; i >= 0; i--)
-    {
-        ts <<= 8;
-        ts |= ts_tab[i];
-    }
-    return ts;
-}
-
-/*! ------------------------------------------------------------------------------------------------------------------
- * @fn get_rx_timestamp_u64()
- *
- * @brief Get the RX time-stamp in a 64-bit variable.
- *        /!\ This function assumes that length of time-stamps is 40 bits, for both TX and RX!
- *
- * @param  none
- *
- * @return  64-bit value of the read time-stamp.
- */
-uint64_t get_rx_timestamp_u64(void)
-{
-    uint8_t ts_tab[5];
-    uint64_t ts = 0;
-    int8_t i;
-    dwt_readrxtimestamp(ts_tab);
-    for (i = 4; i >= 0; i--)
-    {
-        ts <<= 8;
-        ts |= ts_tab[i];
-    }
-    return ts;
-}
-
-
-/*! ------------------------------------------------------------------------------------------------------------------
- * @fn final_msg_get_ts()
- *
- * @brief Read a given timestamp value from the final message. In the timestamp fields of the final message, the least
- *        significant byte is at the lower address.
- *
- * @param  ts_field  pointer on the first byte of the timestamp field to read
- *         ts  timestamp value
- *
- * @return none
- */
-void final_msg_get_ts(const uint8_t *ts_field, uint32_t *ts)
-{
-    uint8_t i;
-    *ts = 0;
-    for (i = 0; i < FINAL_MSG_TS_LEN; i++)
-    {
-        *ts += ((uint32_t)ts_field[i] << (i * 8));
-    }
-}
-
-/*! ------------------------------------------------------------------------------------------------------------------
- * @fn final_msg_set_ts()
- *
- * @brief Fill a given timestamp field in the final message with the given value. In the timestamp fields of the final
- *        message, the least significant byte is at the lower address.
- *
- * @param  ts_field  pointer on the first byte of the timestamp field to fill
- *         ts  timestamp value
- *
- * @return none
- */
-void final_msg_set_ts(uint8_t *ts_field, uint64_t ts)
-{
-    uint8_t i;
-    for (i = 0; i < FINAL_MSG_TS_LEN; i++)
-    {
-        ts_field[i] = (uint8_t)ts;
-        ts >>= 8;
-    }
-}
-

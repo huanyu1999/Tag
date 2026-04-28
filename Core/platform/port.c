@@ -365,13 +365,17 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 		break;
 		
 		case GPIO_PIN_6:
-			
-			if(bee_flag == 0){
-				bee_flag = 1;
-			}else{
-				bee_flag = 0;
-				
-			}
+//			HAL_Delay(10);
+//			if( 0 == HAL_GPIO_ReadPin(GPIOB,GPIO_PIN_6) )
+//			{
+				if(bee_flag == 0){
+					bee_flag = 1;
+				}else{
+					bee_flag = 0;		
+				}
+//				printf_use_dma("bee = %d\r\n", bee_flag);
+//			}
+
 			
 		break;
 

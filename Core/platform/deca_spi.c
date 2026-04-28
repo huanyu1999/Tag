@@ -11,12 +11,13 @@
  * @author DecaWave
  */
 
+#include "instance.h"
 #include "deca_spi.h"
 #include "deca_device_api.h"
 #include "port.h"
 #include "main.h"
 
-extern 	SPI_HandleTypeDef hspi1;	/*clocked from 72MHz*/
+extern SPI_HandleTypeDef hspi1;	/*clocked from 72MHz*/
 
 /****************************************************************************//**
  *
@@ -58,18 +59,36 @@ int writetospi(uint16_t headerLength,
                uint32_t bodyLength,
                const    uint8_t *bodyBuffer)
 {
+#if USE_DW1000_SPI_BLOCK
     decaIrqStatus_t  stat;
     stat = decamutexon();
-
     while (HAL_SPI_GetState(&hspi1) != HAL_SPI_STATE_READY){}
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);                       /**< Put chip select line low */
     HAL_SPI_Transmit(&hspi1, (uint8_t *)&headerBuffer[0], headerLength, 10);    /* Send header in polling mode */
     HAL_SPI_Transmit(&hspi1, (uint8_t *)&bodyBuffer[0], bodyLength, 10);        /* Send data in polling mode */
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);              /**< Put chip select line high */
+    decamutexoff(stat);
+    return 0;
+#endif
 
+#if USE_DW1000_SPI_DMA
+    uint8_t spi_tempBuffer[BUFFLEN];
+    decaIrqStatus_t  stat;
+    stat = decamutexon();
+    
+    while (dw1000_spiDmaBusyFlag);
+    dw1000_spiDmaBusyFlag = 1;
+    dw1000_spiDmaCpltFlag = 0;
+    uint16_t total_len = headerLength + bodyLength;
+    memcpy(spi_tempBuffer, headerBuffer, headerLength);
+    memcpy(spi_tempBuffer + headerLength, bodyBuffer, bodyLength);
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);                       /**< Put chip select line low */
+    HAL_SPI_Transmit_DMA(&hspi1, (uint8_t *)&spi_tempBuffer[0], total_len);    /* Send header in polling mode */
+    while (!dw1000_spiDmaCpltFlag);
     decamutexoff(stat);
 
     return 0;
+#endif
 } // end writetospi()
 
 
@@ -87,23 +106,41 @@ int readfromspi(uint16_t headerLength,
                 uint32_t readlength,
                 uint8_t *readBuffer)
 {
-
+#if USE_DW1000_SPI_BLOCK
     uint8_t spi_TmpBuffer[BUFFLEN];
     //assert_param( headerLength + readlength < BUFFLEN );
-
     decaIrqStatus_t  stat;
     stat = decamutexon();
-
     /* Blocking: Check whether previous transfer has been finished */
     while (HAL_SPI_GetState(&hspi1) != HAL_SPI_STATE_READY);
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET); /**< Put chip select line low */
     HAL_SPI_TransmitReceive(&hspi1, (uint8_t *)headerBuffer, spi_TmpBuffer, (uint16_t)(headerLength+readlength), 10);
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET); /**< Put chip select line high */
     memcpy((uint8_t*)readBuffer , (uint8_t*)&spi_TmpBuffer[headerLength], readlength);
+    decamutexoff(stat);
+    return 0;
+#endif
+
+#if USE_DW1000_SPI_DMA
+    uint8_t spi_TmpBuffer[BUFFLEN];
+    //assert_param( headerLength + readlength < BUFFLEN );
+
+    decaIrqStatus_t  stat;
+    stat = decamutexon();
+
+    while (dw1000_spiDmaBusyFlag);
+    dw1000_spiDmaBusyFlag = 1;
+    dw1000_spiDmaCpltFlag = 0;
+    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET); /**< Put chip select line low */
+    HAL_SPI_TransmitReceive_DMA(&hspi1, (uint8_t *)headerBuffer, spi_TmpBuffer, (uint16_t)(headerLength+readlength));
+    while (!dw1000_spiDmaCpltFlag);
+    memcpy((uint8_t*)readBuffer , (uint8_t*)&spi_TmpBuffer[headerLength], readlength);
 
     decamutexoff(stat);
 
     return 0;
+
+#endif
 } // end readfromspi()
 
 /****************************************************************************//**
