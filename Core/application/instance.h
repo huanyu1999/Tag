@@ -2,12 +2,75 @@
 #define __INSTANCE_H
 
 #include <stdio.h>
-#include "string.h"
-#include "port.h"
+#include <string.h>
+
+/******** UWB 芯片选择：双目标条件编译，由 CMake 目标提供 ************************************
+ * TAG_DW1000 → 定义 USE_DW1000；TAG_DW3000 → 定义 USE_DW3000。
+ * 各自的厂家驱动 / 平台头文件分别存放于 Core/Dw1000、Core/Dw3000（CMake 按目标加入 include 路径）。
+ *******************************************************************************************/
+#if defined(USE_DW3000)
+#include "dw3000_port.h"
 #include "deca_device_api.h"
 #include "deca_regs.h"
 #include "deca_types.h"
 #include "deca_spi.h"
+/* DW1000 deca_types.h 提供 Decawave 短类型别名(uint8/uint16/.../int32)，DW3000 SDK 不提供，
+ * 而应用层与 TWR 算法沿用 DW1000 风格，这里补齐（仅 DW3000 目标生效，与 DW1000 互斥）。 */
+#ifndef _DECA_UINT8_
+#define _DECA_UINT8_
+typedef uint8_t  uint8;
+#endif
+#ifndef _DECA_UINT16_
+#define _DECA_UINT16_
+typedef uint16_t uint16;
+#endif
+#ifndef _DECA_UINT32_
+#define _DECA_UINT32_
+typedef uint32_t uint32;
+#endif
+#ifndef _DECA_INT8_
+#define _DECA_INT8_
+typedef int8_t   int8;
+#endif
+#ifndef _DECA_INT16_
+#define _DECA_INT16_
+typedef int16_t  int16;
+#endif
+#ifndef _DECA_INT32_
+#define _DECA_INT32_
+typedef int32_t  int32;
+#endif
+/* DW3000 SDK 未提供以下常量/宏，取值与 DW1000 deca_device_api.h 一致，TWR 算法共用 */
+#ifndef UUS_TO_DWT_TIME
+#define UUS_TO_DWT_TIME  65536
+#endif
+#ifndef FRAME_LEN_MAX
+#define FRAME_LEN_MAX    (127)
+#endif
+#ifndef FINAL_MSG_TS_LEN
+#define FINAL_MSG_TS_LEN 4
+#endif
+#ifndef SPEED_OF_LIGHT
+#define SPEED_OF_LIGHT   (299702547.0)
+#endif
+#ifndef FCS_LEN
+#define FCS_LEN          (2)
+#endif
+#elif defined(USE_DW1000)
+#include "../DW1000/platform/port_dw1000.h"
+#include "../DW1000/decadriver/deca_device_api.h"
+#include "../DW1000/decadriver/deca_regs.h"
+#include "../Dw1000/decadriver/deca_types.h"
+#include "../DW1000/platform/deca_spi.h" 
+#else
+// #error "请定义 USE_DW1000 或 USE_DW3000（由 CMake 目标 TAG_DW1000 / TAG_DW3000 提供）"
+#include "../DW3000/platform/port_dw1000.h"
+#include "../DW3000/decadriver/deca_device_api.h"
+#include "../DW3000/decadriver/deca_regs.h"
+#include "../Dw3000/decadriver/deca_types.h"
+#include "../DW3000/platform/deca_spi.h"
+#endif
+
 #include "usart.h"
 //#include "ssd1306.h"
 #include "kalman.h"
@@ -32,15 +95,13 @@
  * 计算距离结果比实际距离小，需要增大距离，则减小这个数
  * 计算距离结果比实际距离大，需要减小距离，则增大这个数
  */                                                                                                               
-#if defined(ULM1)
-#define ANT_DLY                         16460
-#define TX_POWER                        0x1f1f1f1f
-#elif defined (LD150)
+
 #define ANT_DLY                         16485
+/* 发射功率，目前设定为最大值 */
+#if defined(USE_DW3000)
+#define TX_POWER                        0xfdfdfdfd
+#elif defined(USE_DW1000)
 #define TX_POWER                        0x1f1f1f1f
-#elif defined (LD_PA)
-#define ANT_DLY                         16500
-#define TX_POWER                        0X9c9c9c9c
 #endif
 
 #define MAX_TAG_LIST_SIZE       (MAX_TAG_NUMBER)
@@ -262,7 +323,7 @@ extern uint8_t target_ancid;
 
 void anchor_app(void);
 void tag_app(void);
-void DW1000_init(void);
+void dw_init(void);
 void print_config(void);                     //打印系统参数信息
 extern void set_instance(void);
 

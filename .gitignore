@@ -31,6 +31,9 @@ Examples/
 *.hex
 
 
+# CMake build output
+build-debug/
+
 #JLINK file
 JLinkLog.txt
 *.dbgconf

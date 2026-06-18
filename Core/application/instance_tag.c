@@ -1,4 +1,5 @@
 #include "instance.h"
+#include "log.h"                                        //SEGGER RTT 调试日志（USART1 留给上位机协议）
 
 
 /* poll数据帧格式 */
@@ -31,6 +32,79 @@ static inline uint64_t get_tx_timestamp_u64(void);
 static inline uint64_t get_rx_timestamp_u64(void);
 static inline void final_msg_get_ts(const uint8_t *ts_field, uint32_t *ts);
 static inline void final_msg_set_ts(uint8_t *ts_field, uint64_t ts);
+
+/* 按通信速率计算 TWR 延迟收发时刻（已取高位 >>8），DW1000/DW3000 支持的速率集不同
+ * （DW3000 无 110K），故按芯片分开实现；状态机只调用，不感知差异。 */
+static uint32_t tag_calc_resp_rx_time(uint64_t poll_ts, uint8_t resp_index);
+static uint64_t tag_calc_final_tx_time(uint64_t poll_ts);
+
+#if defined(USE_DW1000)
+/* resp_index：本周期内第几个 resp（首个为 0）。首个 resp 即 resp_index=0，公式自然退化为 FIRST_RESP_SEND_x */
+static uint32_t tag_calc_resp_rx_time(uint64_t poll_ts, uint8_t resp_index)
+{
+    uint32_t resp_rx_time = 0;
+    if (inst_dataRate == DWT_BR_110K)
+    {
+        resp_rx_time = (poll_ts + ((FIRST_RESP_SEND_110K + resp_index * inst_data_interval) * UUS_TO_DWT_TIME)) >> 8;
+    }
+    else if (inst_dataRate == DWT_BR_6M8)
+    {
+        resp_rx_time = (poll_ts + ((FIRST_RESP_SEND_6P8M + resp_index * inst_data_interval) * UUS_TO_DWT_TIME)) >> 8;
+    }
+    else if (inst_dataRate == DWT_BR_850K)
+    {
+        resp_rx_time = (poll_ts + ((FIRST_RESP_SEND_850K + resp_index * inst_data_interval) * UUS_TO_DWT_TIME)) >> 8;
+    }
+    return resp_rx_time;
+}
+
+static uint64_t tag_calc_final_tx_time(uint64_t poll_ts)
+{
+    uint64_t final_tx_time = 0;
+    if (inst_dataRate == DWT_BR_110K)
+    {
+        final_tx_time = (poll_ts + inst_poll2final_time + TAG_FINALE_SEND_BACK_110K * UUS_TO_DWT_TIME) >> 8;
+    }
+    else if (inst_dataRate == DWT_BR_6M8)
+    {
+        final_tx_time = (poll_ts + inst_poll2final_time + TAG_FINALE_SEND_BACK_6P8M * UUS_TO_DWT_TIME) >> 8;
+    }
+    else if (inst_dataRate == DWT_BR_850K)
+    {
+        final_tx_time = (poll_ts + inst_poll2final_time + TAG_FINALE_SEND_BACK_850K * UUS_TO_DWT_TIME) >> 8;
+    }
+    return final_tx_time;
+}
+#elif defined(USE_DW3000)
+/* DW3000 不支持 110K 速率，仅 850K / 6.8M */
+static uint32_t tag_calc_resp_rx_time(uint64_t poll_ts, uint8_t resp_index)
+{
+    uint32_t resp_rx_time = 0;
+    if (inst_dataRate == DWT_BR_6M8)
+    {
+        resp_rx_time = (poll_ts + ((FIRST_RESP_SEND_6P8M + resp_index * inst_data_interval) * UUS_TO_DWT_TIME)) >> 8;
+    }
+    else if (inst_dataRate == DWT_BR_850K)
+    {
+        resp_rx_time = (poll_ts + ((FIRST_RESP_SEND_850K + resp_index * inst_data_interval) * UUS_TO_DWT_TIME)) >> 8;
+    }
+    return resp_rx_time;
+}
+
+static uint64_t tag_calc_final_tx_time(uint64_t poll_ts)
+{
+    uint64_t final_tx_time = 0;
+    if (inst_dataRate == DWT_BR_6M8)
+    {
+        final_tx_time = (poll_ts + inst_poll2final_time + TAG_FINALE_SEND_BACK_6P8M * UUS_TO_DWT_TIME) >> 8;
+    }
+    else if (inst_dataRate == DWT_BR_850K)
+    {
+        final_tx_time = (poll_ts + inst_poll2final_time + TAG_FINALE_SEND_BACK_850K * UUS_TO_DWT_TIME) >> 8;
+    }
+    return final_tx_time;
+}
+#endif
 
 void tag_app(void)
 {
@@ -95,19 +169,7 @@ void tag_app(void)
         // 发送POLL之后，延时开启接收等待resp
         dwt_setrxtimeout(inst_resp_rx_timeout);     // 设置接收超时时间
         dwt_setpreambledetecttimeout(PRE_TIMEOUT);  // 设置前导码超时
-        uint32_t resp_rx_time;                      // 设置延迟接收开启时间
-        if (inst_dataRate == DWT_BR_110K)
-        {
-            resp_rx_time = (poll_tx_ts + (FIRST_RESP_SEND_110K * UUS_TO_DWT_TIME)) >> 8;
-        }
-        else if (inst_dataRate == DWT_BR_6M8)
-        {
-            resp_rx_time = (poll_tx_ts + (FIRST_RESP_SEND_6P8M * UUS_TO_DWT_TIME)) >> 8;
-        }
-        else if (inst_dataRate == DWT_BR_850K)
-        {
-            resp_rx_time = (poll_tx_ts + (FIRST_RESP_SEND_850K * UUS_TO_DWT_TIME)) >> 8;
-        }
+        uint32_t resp_rx_time = tag_calc_resp_rx_time(poll_tx_ts, 0);  // 计算首个 resp 的延迟接收开启时间
         dwt_setdelayedtrxtime(resp_rx_time);        // 设置接收机开启延时时间
         ret = dwt_rxenable(DWT_START_RX_DELAYED);   // 延时开启接收机
         if (ret == DWT_ERROR)
@@ -137,12 +199,12 @@ void tag_app(void)
         if(rx_status == RX_OK)  // 接收成功
         {
             state = STA_RECV_RESP;
-            // printf_use_dma("rx resp ok.\n");
+            // LOG_I("rx resp ok.");
         }
         else if((rx_status == RX_TIMEOUT) || (rx_status == RX_ERROR))// 接收超时或接收错误
         {
             state = STA_RECV_RESP;
-            // printf_use_dma("rx reception.\n");
+            // LOG_I("rx reception.");
         }
         if(portGetTickCnt() >= (range_time + 50))  // 超时没有中断信号，故障，重启
         {
@@ -185,9 +247,14 @@ void tag_app(void)
                 {
                     tagSleepCorrection_ms = (int16) (((uint16) rx_buffer[RESP_MSG_SLEEP_COR_IDX] << 8) + rx_buffer[RESP_MSG_SLEEP_COR_IDX+1]);//高8位存11  低8位存12
                     Correction_flag = 1;            // 接收到基站发送的校准时间，将该标志位置1
+                    /* RSSI 诊断读取（占位，readdiagnostics 暂未启用）。
+                     * DW1000 的 dwt_rxdiag_t 有厂家自加的 rxPower 字段；DW3000 结构不同
+                     * （ipatovPower/stsPower），故此块仅对 DW1000 编译，DW3000 暂跳过。 */
+#if defined(USE_DW1000)
                     dwt_rxdiag_t rx_diag;
                     //dwt_readdiagnostics(&rx_diag);// 读取信号强度等诊断信息
                     rx_power = rx_diag.rxPower;
+#endif
                 }
             }
             resp_expect--;
@@ -227,19 +294,8 @@ void tag_app(void)
             }
             else//继续接收其他resp消息
             {
-                uint32_t resp_rx_time;  // 设置resp数据接收机开启时间，记得要取高23bit
-                if (inst_dataRate == DWT_BR_110K)
-                {
-                    resp_rx_time = (poll_tx_ts + ((FIRST_RESP_SEND_110K + (MAX_AHCHOR_NUMBER - resp_expect) * inst_data_interval) * UUS_TO_DWT_TIME)) >> 8;
-                }
-                else if (inst_dataRate == DWT_BR_6M8)
-                {
-                    resp_rx_time = (poll_tx_ts + ((FIRST_RESP_SEND_6P8M + (MAX_AHCHOR_NUMBER - resp_expect) * inst_data_interval) * UUS_TO_DWT_TIME)) >> 8;
-                }
-                else if (inst_dataRate == DWT_BR_850K)
-                {
-                    resp_rx_time = (poll_tx_ts + ((FIRST_RESP_SEND_850K + (MAX_AHCHOR_NUMBER - resp_expect) * inst_data_interval) * UUS_TO_DWT_TIME)) >> 8;
-                }
+                // 设置resp数据接收机开启时间，记得要取高23bit；resp_index = 已收/已等待的 resp 序号
+                uint32_t resp_rx_time = tag_calc_resp_rx_time(poll_tx_ts, (MAX_AHCHOR_NUMBER - resp_expect));
                 dwt_setdelayedtrxtime(resp_rx_time);                // 设置接收机开启延时时间
                 int ret = dwt_rxenable(DWT_START_RX_DELAYED);       // 延时开启接收机
                 if(ret == DWT_ERROR)
@@ -257,19 +313,8 @@ void tag_app(void)
 
     case STA_SEND_FINAL:
     {
-        uint64_t final_tx_time;  // 设置final发送时间, 记得要获取高32位，用于设置延迟发送时间
-        if(inst_dataRate == DWT_BR_110K)
-        {
-            final_tx_time = (poll_tx_ts + inst_poll2final_time + TAG_FINALE_SEND_BACK_110K * UUS_TO_DWT_TIME) >> 8;  //设置final发送时间
-        }
-        else if(inst_dataRate == DWT_BR_6M8)
-        {
-            final_tx_time = (poll_tx_ts + inst_poll2final_time + TAG_FINALE_SEND_BACK_6P8M * UUS_TO_DWT_TIME) >> 8;  //设置final发送时间
-        }
-        else if(inst_dataRate == DWT_BR_850K)
-        {
-            final_tx_time = (poll_tx_ts + inst_poll2final_time + TAG_FINALE_SEND_BACK_850K * UUS_TO_DWT_TIME) >> 8;  //设置final发送时间
-        }
+        // 设置final发送时间, 记得要获取高32位，用于设置延迟发送时间
+        uint64_t final_tx_time = tag_calc_final_tx_time(poll_tx_ts);
         dwt_setdelayedtrxtime((uint32)final_tx_time); // 在final_tx_time这个时间发送数据
         
         final_tx_ts = (((uint64_t)(final_tx_time & 0xFFFFFFFEUL)) << 8) + ant_dly;  // final发送时间戳
@@ -302,6 +347,9 @@ void tag_app(void)
         tx_status = TX_WAIT;                                       // 发送状态标志，在中断回调函数变更
         if(dwt_starttx(DWT_START_TX_DELAYED) == DWT_ERROR)
         {
+            /* 诊断(临时)：FINAL 延时发送时刻已过 → 发不出去 → 基站收不到 FINAL → 测不出距离。
+             * 只在失败分支打印(本周期已放弃，不影响时序)。排查完可删。 */
+            LOG_W("FINAL tx FAILED (delayed time passed), rb=%d", range_nb);
             next_period_time = range_time + inst_one_slot_time * inst_slot_number;//设置下个周期开始时间
             state = STA_IDLE;
             break;

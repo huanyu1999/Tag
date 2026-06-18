@@ -1,4 +1,5 @@
 #include "instance.h"
+#include "log.h"                                        //SEGGER RTT 调试日志（USART1 留给上位机协议）
 
 uint8_t switch8 = 0;                                    //拨码开关键值
 uint8_t instance_mode = ANCHOR;                         //设备运行角色
@@ -42,8 +43,7 @@ int lost_flag = 0;										//失联标志位
 /* 没有板载EEPROM */
 uint8_t USE_EEPROM = 0;  
 
-#define TAG_ID 0x1D
-
+#define TAG_ID 0x07
 /*******************************************************SPI DMA 读写完成标志********************************************************/
 volatile uint8_t dw1000_spiDmaCpltFlag = 0;
 volatile uint8_t dw1000_spiDmaBusyFlag = 0;
@@ -52,6 +52,13 @@ volatile uint8_t dw1000_spiDmaBusyFlag = 0;
 void parse_uart(uint8_t* data);
 void read_anc_coord(void);
 void print_config(void);
+
+#if defined(USE_DW1000)
+
+static dwt_txconfig_t txconfig_options = {
+    .PGdly = 0XC2,            /* PG delay */
+    .power = TX_POWER         /* TX power */
+};
 
 /* dw1000 rf 配置  */
 static dwt_config_t uwb_config_channel5[7] = {
@@ -91,17 +98,17 @@ static dwt_config_t uwb_config_channel5[7] = {
         .phrMode = DWT_PHRMODE_STD,
         .sfdTO = (1025 + DW_NS_SFD_LEN_850K - 32)
     },
-    {    /* uwb_config3，channel5 脉冲频率64M 前导码长度128 数据率 6M8 */
+    {    /* uwb_config3，channel5 脉冲频率64M 前导码长度1024 数据率 850K PAC_Size 64 */
         .chan = 5,
         .prf = DWT_PRF_64M,
-        .txPreambLength = DWT_PLEN_128,
-        .rxPAC = DWT_PAC8,
+        .txPreambLength = DWT_PLEN_1024,
+        .rxPAC = DWT_PAC64,
         .txCode = 10,
         .rxCode = 10,
         .nsSFD = 1,
-        .dataRate = DWT_BR_6M8,
+        .dataRate = DWT_BR_850K,
         .phrMode = DWT_PHRMODE_STD,
-        .sfdTO = (129 + DW_NS_SFD_LEN_6M8 - 8)
+        .sfdTO = (1025 + DW_NS_SFD_LEN_850K - 64)
     }, 
     {    /* uwb_config4，channel5 脉冲频率64M 前导码长度256 数据率 6M8 */
         .chan = 5,
@@ -140,13 +147,38 @@ static dwt_config_t uwb_config_channel5[7] = {
         .sfdTO = (2049 + DW_NS_SFD_LEN_110K - 64)
     }, 
 };
-
-static dwt_txconfig_t txconfig_options = {
-    .PGdly = 0XC2,            /* PG delay */
-    .power = TX_POWER         /* TX power */
+#elif defined(USE_DW3000)
+/* dw3000 rf 配置 channel5（6.5GHz，与 DW1000 ch5 设备互通）
+ * DW3000 不支持 110K 速率；PRF 由 txCode/rxCode 隐含（code 9~24 = 64MHz）
+ * sfdType: 0=IEEE 8bit, 1=DW 8bit, 2=DW 16bit, 3=4z BPRF
+ */
+static dwt_config_t uwb_config_channel5[1] = {
+    {   /* uwb_config0，channel5 PRF64M 前导码长度1024 数据率 850K，主要使用 */
+        .chan = 5,
+        .txPreambLength = DWT_PLEN_1024,
+        .rxPAC = DWT_PAC32,
+        .txCode = 10,
+        .rxCode = 10,
+        .sfdType = 2,                   /* DW 16-bit SFD，与 DW1000 nsSFD 配置对齐 */
+        .dataRate = DWT_BR_850K,
+        .phrMode = DWT_PHRMODE_STD,
+        .phrRate = DWT_PHRRATE_STD,
+        .sfdTO = (1025 + DWT_SFD_LEN16 - 32),
+        .stsMode = DWT_STS_MODE_OFF,
+        .stsLength = DWT_STS_LEN_64,
+        .pdoaMode = DWT_PDOA_M0
+    },
 };
 
-void DW1000_init(void)
+static dwt_txconfig_t txconfig_options = {
+    .PGdly = 0xC2,           /* PG delay */
+    .power = TX_POWER,       /* TX power */
+    .PGcount = 0
+};
+#endif
+
+#if defined(USE_DW1000)
+static void dw1000_init(void)
 {
     dwt_config_t *current_rfConfig = &uwb_config_channel5[2];
 
@@ -325,13 +357,112 @@ void DW1000_init(void)
         state = STA_IDLE;
     }
     // 因为当前板子引脚分配，dw1000中断脚为PB0，复位引脚为PA0，共用一个中断线，在setup_DW1000RSTnIRQ中会关闭该中断，因此在这里重新打开。
-    HAL_NVIC_EnableIRQ(EXTI0_IRQn);  
+    HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+}
+#elif defined(USE_DW3000)
+static void dw3000_init(void)
+{
+    dwt_config_t *current_rfConfig = &uwb_config_channel5[0];
+
+    /* 关键：CubeMX 的 MX_GPIO_Init() 已使能 EXTI0(PB0)，且早于本函数执行。
+     * DW3000 复位后会立即拉高 IRQ(SPIRDY/RCINIT)，若此时 EXTI0 是活的，会在
+     * port_set_dwic_isr() 注册前就进入 process_deca_irq()，因 isr 仍为 NULL 而死循环。
+     * 故初始化期间先屏蔽 EXTI0，待 ISR 注册完毕、清掉 pending 后再于末尾重新打开。*/
+    port_DisableEXT_IRQ();
+
+    reset_DW3000();                         /* 硬复位 DW3000（平台层提供，待 F4→F1 移植补齐）*/
+    port_set_dw_ic_spi_slowrate();
+    while (!dwt_checkidlerc())               /* 等待 DW3000 进入 IDLE_RC 状态后再继续 */
+    { };
+    if (dwt_initialise(DWT_DW_INIT) == DWT_ERROR) // dw3000初始化失败
+    {
+        while (1);
+    }
+    port_set_dw_ic_spi_fastrate();
+
+    inst_slot_number = MAX_TAG_NUMBER;
+
+    dwt_configure(current_rfConfig);
+    inst_dataRate = current_rfConfig->dataRate;
+    inst_ch       = current_rfConfig->chan;
+
+    /* 配置通信相关时序（DW3000 不支持 110K，仅 850K/6.8M）*/
+    if(inst_dataRate == DWT_BR_6M8)
+    {
+        inst_one_slot_time    = ONE_SLOT_TIME_MS_6P8M;
+        inst_final_rx_timeout = FINAL_RX_TIMEOUT_6P8M;
+        inst_resp_rx_timeout  = RESP_RX_TIMEOUT_6P8M;
+        inst_data_interval    = DATA_INTERVAL_TIME_6P8M;
+        inst_poll2final_time  = ((FIRST_RESP_SEND_6P8M +  MAX_AHCHOR_NUMBER * inst_data_interval) * UUS_TO_DWT_TIME);
+    }
+    else if(inst_dataRate == DWT_BR_850K)
+    {
+        inst_one_slot_time    = ONE_SLOT_TIME_MS_850K;
+        inst_final_rx_timeout = FINAL_RX_TIMEOUT_850K;
+        inst_resp_rx_timeout  = RESP_RX_TIMEOUT_850K;
+        inst_data_interval    = DATA_INTERVAL_TIME_850K;
+        inst_poll2final_time  = ((FIRST_RESP_SEND_850K +  MAX_AHCHOR_NUMBER * inst_data_interval) * UUS_TO_DWT_TIME);
+    }
+
+    txconfig_options.power = TX_POWER;
+    tx_power = txconfig_options.power;
+    dwt_configuretxrf(&txconfig_options);   //设置发射功率和pg值
+
+    ant_dly = ANT_DLY;
+    dwt_setrxantennadelay(ant_dly);         //设置天线延时
+    dwt_settxantennadelay(ant_dly);
+
+    dwt_setpanid(PAN_ID);                                                   //设置PAN ID 组号
+    dwt_configureframefilter(DWT_FF_ENABLE_802_15_4, DWT_FF_DATA_EN | DWT_FF_ACK_EN); //设置帧过滤模式开启
+    dwt_setlnapamode(DWT_LNA_ENABLE | DWT_PA_ENABLE);                       //设置外置PA和LNA控制开启
+    dwt_setleds(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK);                     //设置收发指示灯开启
+
+    /* 配置角色为标签 */
+    instance_mode = TAG;
+    dev_id = TAG_ID;
+
+    /* 设置中断标志：必须使能 ARFE（帧过滤拒绝）中断，与 DW1000 路径(DWT_INT_ARFE)对齐，
+     * 否则漏收 poll 又收到发给标签的 resp 帧时，接收机会被静默关闭、再也收不到后续 poll。 */
+    dwt_setinterrupt(SYS_ENABLE_LO_TXFRS_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXFCG_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXFTO_ENABLE_BIT_MASK |
+                     SYS_ENABLE_LO_RXPTO_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXPHE_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXFCE_ENABLE_BIT_MASK |
+                     SYS_ENABLE_LO_RXFSL_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXSTO_ENABLE_BIT_MASK |
+                     SYS_ENABLE_LO_ARFE_ENABLE_BIT_MASK, 0, DWT_ENABLE_INT);
+
+    //设置标签的中断回调函数（DW3000 为 6 参数：含 SPI 错误/就绪回调，未用传 NULL）
+    dwt_setcallbacks(&tag_tx_conf_cb, &tag_rx_ok_cb, &tag_rx_to_cb, &tag_rx_err_cb, NULL, NULL);
+
+    dwt_setaddress16(dev_id);
+    tag_id = dev_id;
+    dwt_forcetrxoff();
+    state = STA_IDLE;
+
+    /* 注册 ISR 指针（屏蔽态下安装，不改使能态）：中断里调用 dwt_isr() 分发到上面注册的回调 */
+    port_set_dwic_isr(dwt_isr);
+
+    /* 清掉 init 期间(复位/配置)在 PB0 上锁存的 EXTI 边沿与 NVIC pending，
+     * 避免一使能就立刻进一次"陈旧"中断。之后 dwt_isr 能正常读/清 SYS_STATUS。*/
+    __HAL_GPIO_EXTI_CLEAR_IT(DW1000_IRQ_Pin);
+    HAL_NVIC_ClearPendingIRQ(EXTI0_IRQn);
+
+    /* 唯一的“开”：进入稳态，使能 EXTI0(PB0)。此后 decamutex 在每次 SPI 收发时
+     * 依赖该稳态使能来 save/disable/restore，故必须在这里打开。*/
+    port_EnableEXT_IRQ();
+}
+#endif
+
+/* 对外统一入口：main.c 调用 dw_init() 完成 UWB 初始化，内部按编译目标分派到对应芯片(DW1000/DW3000) */
+void dw_init(void)
+{
+#if defined(USE_DW1000)
+    dw1000_init();
+#elif defined(USE_DW3000)
+    dw3000_init();
+#endif
 }
 
 void dw_main(void)
 {   
     int lost_work = 0;
-    char distance_report_char[4][40];
     while(1)                                        //测距功能实现，按角色执行基站状态机或标签状态机
     {
         // HAL_IWDG_Refresh(&hiwdg);                //喂狗
@@ -348,19 +479,22 @@ void dw_main(void)
                     distance_report[i] = kalman_filter(distance_report[i], i, (instance_mode == TAG) ? tag_id : recv_tag_id);
                 }
             }
+            /* 打印所有基站距离：按 MAX_AHCHOR_NUMBER 动态生成，两位小数，单位 m。
+             * 距离<0 视为无效显示 null。以后改 MAX_AHCHOR_NUMBER 即自动增减，无需再手列 A0~A3。 */
+            char dist_line[MAX_AHCHOR_NUMBER * 24 + 16];
+            int  pos = sprintf(dist_line, "TAG_ID%d", dev_id);
             for(int i = 0; i < MAX_AHCHOR_NUMBER; i++)
             {
                 if(distance_report[i] >= 0)
                 {
-                    sprintf(distance_report_char[i], "%.2f", (float)distance_report[i]/1000.0);
+                    pos += sprintf(dist_line + pos, ", A%d %.2f", i, (float)distance_report[i] / 1000.0);
+                }
+                else
+                {
+                    pos += sprintf(dist_line + pos, ", A%d null", i);
                 }
             }
-            printf_use_dma( "TAG_ID%d, A0 %s, A1 %s, A2 %s, A3 %s\r\n",
-                            dev_id, 
-                            (distance_report[0] >= 0) ? distance_report_char[0] : "null", 
-                            (distance_report[1] >= 0) ? distance_report_char[1] : "null", 
-                            (distance_report[2] >= 0) ? distance_report_char[2] : "null", 
-                            (distance_report[3] >= 0) ? distance_report_char[3] : "null" );
+            LOG_RAW("%s\r\n", dist_line);
             led_off(RUN_LED2);
             
             if( (float)(distance_report[recv_anc_id] / 1000.0) < MIN_DISTANCE )
@@ -392,7 +526,7 @@ void dw_main(void)
         {
             range_status = RANGE_NULL;              //清空标志位
             
-            printf_use_dma("RANGE_ERROR, ID = %d, rb = %d, range_time = %d\r\n", dev_id, range_nb, range_time);
+            LOG_W("RANGE_ERROR, ID = %d, rb = %d, range_time = %d", dev_id, range_nb, range_time);
             
             for(uint8_t i = 0; i < 8; i++)  //清空distance_report数组，设置无效值
             {
@@ -414,44 +548,20 @@ void dw_main(void)
 
 void print_config(void)
 {
-    int len;
-    uint8_t UART_TX_DATA[512];
-    len = sprintf((char*)&UART_TX_DATA[0], "\r\n***************************************************\r\n");
-    HAL_UART_Transmit(&huart1, &UART_TX_DATA[0], len, 1000);
+    LOG_RAW("\r\n***************************************************\r\n");
+    LOG_RAW("* role = TAG\r\n");
+    LOG_RAW("* firmware = %s\r\n* role = %s\r\n* addr = %d\r\n", SOFTWARE_VER, (instance_mode == TAG)?"TAG":"AHCHOR", dev_id);
+    LOG_RAW("* max_anc_num = %d\r\n* max_tag_num = %d\r\n* sync = 0\r\n", MAX_AHCHOR_NUMBER, inst_slot_number);
 
-    len = sprintf((char*)&UART_TX_DATA[0], "* role = TAG\r\n");
-    HAL_UART_Transmit(&huart1, &UART_TX_DATA[0], len, 1000);
-
-    len = sprintf((char*)&UART_TX_DATA[0], "* firmware = %s\r\n* role = %s\r\n* addr = %d\r\n", SOFTWARE_VER, (instance_mode == TAG)?"TAG":"AHCHOR", dev_id);
-    HAL_UART_Transmit(&huart1, &UART_TX_DATA[0], len, 1000);
-
-    len = sprintf((char*)&UART_TX_DATA[0], "* max_anc_num = %d\r\n* max_tag_num = %d\r\n* sync = 0\r\n", MAX_AHCHOR_NUMBER, inst_slot_number);
-    HAL_UART_Transmit(&huart1, &UART_TX_DATA[0], len, 1000);
-
-    len = sprintf((char*)&UART_TX_DATA[0], "* baud_rate = %s\r\n* channel = CH%d\r\n", (inst_dataRate == DWT_BR_110K)? "110K" : "6.8M", inst_ch);
-    HAL_UART_Transmit(&huart1, &UART_TX_DATA[0], len, 1000);
-
-    len = sprintf((char*)&UART_TX_DATA[0], "* data_rate = %dHz\r\n* update_time = %dms\r\n* kalmanfilter = %d\r\n", 1000 / (inst_slot_number * inst_one_slot_time), inst_slot_number * inst_one_slot_time, (switch8 & SWS1_KAM_MODE)? 1:0);
-    HAL_UART_Transmit(&huart1, &UART_TX_DATA[0], len, 1000);
-
-    len = sprintf((char*)&UART_TX_DATA[0], "* ant_dly  = %d\r\n* tx_power = %08lx\r\n", ant_dly, tx_power);
-    HAL_UART_Transmit(&huart1, &UART_TX_DATA[0], len, 1000);
-
-    // len = sprintf((char*)&UART_TX_DATA[0], "* use_eeprom = %d\r\n* use_imu = %d\r\n* use_oled = %d\r\n", USE_EEPROM, USE_IMU, USE_OLED);
-    // HAL_UART_Transmit(&huart2, &UART_TX_DATA[0], len, 1000);
-    
-//    if(instance_mode == TAG)
-//    {
-//        len = sprintf((char*)&UART_TX_DATA[0], "* A0(%.2f, %.2f, %.2f) A1(%.2f, %.2f, %.2f)\r\n* A2(%.2f, %.2f, %.2f) A3(%.2f, %.2f, %.2f)\r\n", 
-//                                                    anchorArray[0].x, anchorArray[0].y, anchorArray[0].z, 
-//                                                    anchorArray[1].x, anchorArray[1].y, anchorArray[1].z,
-//                                                    anchorArray[2].x, anchorArray[2].y, anchorArray[2].z,
-//                                                    anchorArray[3].x, anchorArray[3].y, anchorArray[3].z);
-//        HAL_UART_Transmit(&huart2, &UART_TX_DATA[0], len, 1000);
-//    }
-
-    len = sprintf((char*)&UART_TX_DATA[0], "***************************************************\r\n");
-    HAL_UART_Transmit_DMA(&huart1, &UART_TX_DATA[0], len);
+#if defined(USE_DW1000)
+    const char *baud_str = (inst_dataRate == DWT_BR_110K) ? "110K" : "850K";  // DW1000 当前配置为 850K
+#else
+    const char *baud_str = (inst_dataRate == DWT_BR_6M8)  ? "6.8M" : "850K";  // DW3000 无 110K
+#endif
+    LOG_RAW("* baud_rate = %s\r\n* channel = CH%d\r\n", baud_str, inst_ch);
+    LOG_RAW("* data_rate = %dHz\r\n* update_time = %dms\r\n* kalmanfilter = %d\r\n", 1000 / (inst_slot_number * inst_one_slot_time), inst_slot_number * inst_one_slot_time, (switch8 & SWS1_KAM_MODE)? 1:0);
+    LOG_RAW("* ant_dly  = %d\r\n* tx_power = %08lx\r\n", ant_dly, tx_power);
+    LOG_RAW("***************************************************\r\n");
 }
 
 void delay500ms(void)

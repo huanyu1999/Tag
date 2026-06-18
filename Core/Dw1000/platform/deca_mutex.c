@@ -1,17 +1,17 @@
 /*! ----------------------------------------------------------------------------
- * @file    deca_mutex.c
- * @brief   IRQ interface / mutex implementation
+ * @file	deca_mutex.c
+ * @brief	IRQ interface / mutex implementation
  *
  * @attention
  *
- * Copyright 2015-2020 (c) DecaWave Ltd, Dublin, Ireland.
+ * Copyright 2015 (c) DecaWave Ltd, Dublin, Ireland.
  *
  * All rights reserved.
  *
  */
 
-#include <deca_device_api.h>
-#include "dw3000_port.h"
+#include "deca_device_api.h"
+#include "port_dw1000.h"
 // ---------------------------------------------------------------------------
 //
 // NB: The purpose of this file is to provide for microprocessor interrupt enable/disable, this is used for 

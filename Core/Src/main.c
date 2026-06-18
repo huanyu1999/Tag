@@ -27,7 +27,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "log.h"     // 基于 SEGGER RTT 的调试日志（USART1 留给上位机协议）
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -103,13 +103,20 @@ int main(void)
     MX_TIM3_Init(); //控制ADC
                         
     /* USER CODE BEGIN 2 */
+    LOG_INIT();
+    LOG_I("==== Label TAG boot ====");
+#if defined(USE_DW3000)
+    LOG_I("UWB chip: DW3000");
+#elif defined(USE_DW1000)
+    LOG_I("UWB chip: DW1000");
+#endif
 
     /*****ADC开关*****/
     HAL_ADC_Start_IT(&hadc1);  
     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, GPIO_PIN_RESET);
     /*****************/
 
-    DW1000_init();
+    dw_init();
 
     /*****开机自检****/
     print_config(); //打印系统参数信息
@@ -128,7 +135,7 @@ int main(void)
     {
     /* USER CODE END WHILE */
     /* USER CODE BEGIN 3 */
-        printf_use_dma("adc_time = %d	Real_value = %lf\r\n",ADC_time, Real_value);
+        LOG_I("adc_time = %d, Vbat = %d mV", ADC_time, (int)(Real_value * 1000));   // RTT printf 不支持 %f，电压转整数 mV
         Real_value = 0;
         HAL_Delay(10000);
     }
