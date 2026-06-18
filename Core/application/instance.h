@@ -89,6 +89,8 @@ typedef int32_t  int32;
 #define SOFTWARE_VER                   "V1"
 
 #define MAX_AHCHOR_NUMBER               2       // 系统内最大基站数量，取4或者8，比如实际3个取4，实际6个取8
+
+#define LOST_TIMEOUT_MS                 5000    // 基站通信超时阈值（ms），超过此时间未收到有效测距即判定失联
 #define MAX_TAG_NUMBER                  50      // 设置最大标签个数
 
 /* 天线延时
@@ -309,6 +311,7 @@ extern uint8_t USE_IMU;
 extern int user_data[10];
 extern uint32_t distance_flag;
 extern int lost_flag;
+extern uint32_t last_range_ok_tick;
 extern uint32_t right_work;  //正常工作
 
 extern volatile uint8_t dw1000_spiDmaCpltFlag;

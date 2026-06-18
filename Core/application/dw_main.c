@@ -40,6 +40,7 @@ uint8_t alarm = 0;
 int user_data[10];
 uint32_t distance_flag = 0;								//判断蜂鸣器和灯标志位
 int lost_flag = 0;										//失联标志位
+uint32_t last_range_ok_tick = 0;						//最后一次成功测距的时间戳
 /* 没有板载EEPROM */
 uint8_t USE_EEPROM = 0;  
 
@@ -462,7 +463,7 @@ void dw_init(void)
 
 void dw_main(void)
 {   
-    int lost_work = 0;
+    last_range_ok_tick = portGetTickCnt();          //初始化，给系统启动预留超时窗口
     while(1)                                        //测距功能实现，按角色执行基站状态机或标签状态机
     {
         // HAL_IWDG_Refresh(&hiwdg);                //喂狗
@@ -506,43 +507,29 @@ void dw_main(void)
                 distance_flag = 0;
             }
 
-			lost_flag = 0; //没有失联
-//			right_work++;
-//			if (right_work == 68) // 正常工作30s响一次
-//			{
-//				bee_on();
-//				
-//			}else{
-//				bee_close();
-//			}
-//			
-//			if (right_work == 70) 
-//			{
-//				right_work = 0;
-//			}
+			last_range_ok_tick = portGetTickCnt(); //刷新成功测距时间戳
+			lost_flag = 0;
 
         }
-        else if(range_status == RANGE_ERROR) 
+        else if(range_status == RANGE_ERROR)
         {
             range_status = RANGE_NULL;              //清空标志位
-            
+
             LOG_W("RANGE_ERROR, ID = %d, rb = %d, range_time = %d", dev_id, range_nb, range_time);
-            
+
             for(uint8_t i = 0; i < 8; i++)  //清空distance_report数组，设置无效值
             {
-               distance_report[i] = -1; 
-               group_report[i] = -1; 
+                distance_report[i] = -1;
+                group_report[i] = -1;
             }
-			
-			lost_work++; //没有测到60次为失联
-			if(lost_work == 60)
-			{
-				lost_flag = 1;
-				lost_work = 0;
-			}
-	
         }
-	
+
+        // 基于时间戳判定失联：超过 LOST_TIMEOUT_MS 未成功测距即置失联标志
+        if((portGetTickCnt() - last_range_ok_tick) > LOST_TIMEOUT_MS)
+        {
+            lost_flag = 1;
+        }
+
     }
 }
 
@@ -667,7 +654,6 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 //    }
 //}
 
-
 /*
     串口指令集，注意发送指令以$开头，以\r\n结尾
     $rboot            重启
@@ -678,100 +664,3 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
     $sanccd,0,0,2,0,3.1,2,3.1,0,2,3.1,3.1,2  设置基站坐标A0.X,A0.Y,A0.Z,A1.X,A1,Y,A1,Z,A2.X,A2,Y,A2,Z,A3.X,A3,Y,A3,Z
     $sdata,abcdefg
 */
-
-//void parse_uart(uint8_t* data)
-//{
-//  
-//    if(strchr((char*)data, ',') > 0)//带参数指令 如 $santdly,11223
-//    {
-//        char *ptr, *retptr;
-//        ptr = (char*)data;
-//        retptr = strtok(ptr, ",");//解析数据头
-
-//        if(strcmp(retptr, "$santdly") == 0)//设置天线延时参数  $santdly,16375
-//        {
-//            ptr = NULL;
-//            retptr = strtok(ptr, ",");
-//            ant_dly = atoi(retptr);
-//            if(USE_EEPROM == 1) //板载EEPROM
-//            {
-//                uint8_t ant_dly_write[EEP_UNIT_SIZE] = {0};
-//                ant_dly_write[0] = 0xAA;
-//                ant_dly_write[1] = ant_dly >> 8;
-//                ant_dly_write[2] = (uint8)ant_dly;
-//                E2prom_Write(ANT_DLY_ADDR, ant_dly_write, EEP_UNIT_SIZE); 
-//            }
-//            HAL_NVIC_SystemReset();//重启
-//        }
-//        else if(strcmp(retptr, "$stxpwr") == 0)//设置发射增益参数  $stxpwr,1f1f1f1f 
-//        {
-//            ptr = NULL;
-//            retptr = strtok(ptr, ",");
-//            sscanf(retptr, "%08lx", &tx_power);
-//            if(USE_EEPROM == 1) //板载EEPROM
-//            {
-//                uint8_t tx_pwr_write[EEP_UNIT_SIZE] = {0};
-//                tx_pwr_write[0] = 0xAA;
-//                tx_pwr_write[1] = tx_power >> 24;
-//                tx_pwr_write[2] = tx_power >> 16;
-//                tx_pwr_write[3] = tx_power >> 8;
-//                tx_pwr_write[4] = tx_power;
-//                E2prom_Write(TX_PWR_ADDR, tx_pwr_write, EEP_UNIT_SIZE);
-//            }
-//            HAL_NVIC_SystemReset();//重启 
-//        }
-//        else if(strcmp(retptr, "$sanccd") == 0) //给标签设置基站坐标，用于标签自己三边定位输出定位结果
-//        {
-//            retptr[7] = ',';
-//            uint8_t zero[56] = {0};
-//            if(USE_EEPROM == 1) //板载EEPROM
-//            {
-//                E2prom_Write(ANC_COORD_ADDR, (uint8_t*)zero, 56);
-//                HAL_Delay(10);
-//                E2prom_Write(ANC_COORD_ADDR, (uint8_t*)retptr, strlen((char*)retptr));
-//            }
-//            HAL_NVIC_SystemReset();//重启
-//        }
-//        else if(strcmp(retptr, "$saddr") == 0) //设置标签ID
-//        {
-//            ptr = NULL;
-//            retptr = strtok(ptr, ",");
-//            if(USE_EEPROM == 1) //板载EEPROM
-//            {
-//                uint8_t addr_write[EEP_UNIT_SIZE] = {0};
-//                addr_write[0] = 0xAA;
-//                addr_write[1] = atoi(retptr);
-//                E2prom_Write(DEV_ID_ADDR, addr_write, EEP_UNIT_SIZE);
-//            }
-//            HAL_NVIC_SystemReset();//重启
-//        }
-
-//    }
-//    else //无参数指令 如$rboot
-//    {
-//        if(strcmp((char*)data, "$rboot\r\n") == 0)//重启
-//        {
-//            HAL_NVIC_SystemReset();//重启 
-//        }
-//        else if(strcmp((char*)data, "$rantdly\r\n") == 0)//查询天线延时参数
-//        {
-//            uint8_t UART_COMMAND_BUF[50];
-//            uint8_t len = sprintf((char*)UART_COMMAND_BUF, "ant_dly = %d\r\n", ant_dly);
-//            HAL_UART_Transmit(&huart2, &UART_COMMAND_BUF[0], len, 1000);
-//        }
-//        else if(strcmp((char*)data, "$reset\r\n") == 0)//恢复默认参数
-//        {
-//            uint8_t write_zero[256]={0};
-//            E2prom_Write(0, write_zero, 256);
-//            HAL_NVIC_SystemReset();//重启 
-//        }
-//    }
-//}
-
-//void HAL_UART_IdleCpltCallback(UART_HandleTypeDef *huart)
-//{
-//    //HAL_UART_Transmit(&huart2, &UART_RX_BUF[0], strlen((char*)UART_RX_BUF), 1000);
-//    uart_rx_len = strlen((char*)UART_RX_BUF);
-
-//}
-

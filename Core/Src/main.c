@@ -195,29 +195,44 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 //TIM定时返回函数
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)//回调函数
 {
-    if( htim == &htim2 ) 
+    if( htim == &htim2 )
     {
-        if( distance_flag == 1 ) //
-        {
-            led_toggle(RUN_LED1); //距离近红灯闪烁
-        }else{
-            led_off(RUN_LED1);    
-        }
+        static uint8_t tim2_cnt = 0;
+        tim2_cnt++;
 
-        if( bee_flag == 1 && distance_flag == 1 )
+        if( lost_flag == 1 )
         {
-            bee_toggle();
-        }else{
-            bee_close();
-        }
-        
-        if( lost_flag == 1 ) //
-        {
-            led_toggle(RUN_LED2); //失联黄灯闪烁
+            led_toggle(RUN_LED2); //失联黄灯2Hz闪烁（每次回调toggle，4Hz回调 → 2Hz闪烁）
             bee_close();
             led_off(RUN_LED1);
-        }else{
-            led_off(RUN_LED2);    
+        }
+        else
+        {
+            led_off(RUN_LED2);
+
+            if( distance_flag == 1 )
+            {
+                if(tim2_cnt % 2 == 0) //二分频，保持1Hz闪烁
+                {
+                    led_toggle(RUN_LED1); //距离近红灯闪烁
+                }
+            }
+            else
+            {
+                led_off(RUN_LED1);
+            }
+
+            if( bee_flag == 1 && distance_flag == 1 )
+            {
+                if(tim2_cnt % 2 == 0)
+                {
+                    bee_toggle();
+                }
+            }
+            else
+            {
+                bee_close();
+            }
         }
     }
 
