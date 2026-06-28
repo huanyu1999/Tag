@@ -1,4 +1,4 @@
-#include "instance.h"
+#include "dw_instance.h"
 #include "log.h"                                        //SEGGER RTT 调试日志（USART1 留给上位机协议）
 
 uint8_t switch8 = 0;                                    //拨码开关键值
