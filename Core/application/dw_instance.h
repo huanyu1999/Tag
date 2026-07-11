@@ -57,18 +57,13 @@ typedef int32_t  int32;
 #define FCS_LEN          (2)
 #endif
 #elif defined(USE_DW1000)
-#include "../DW1000/platform/port_dw1000.h"
-#include "../DW1000/decadriver/deca_device_api.h"
-#include "../DW1000/decadriver/deca_regs.h"
-#include "../Dw1000/decadriver/deca_types.h"
-#include "../DW1000/platform/deca_spi.h" 
+#include "port_dw1000.h"
+#include "deca_device_api.h"
+#include "deca_regs.h"
+#include "deca_types.h"
+#include "deca_spi.h"
 #else
-// #error "请定义 USE_DW1000 或 USE_DW3000（由 CMake 目标 TAG_DW1000 / TAG_DW3000 提供）"
-#include "../DW3000/platform/port_dw3000.h"
-#include "../DW3000/decadriver/deca_device_api.h"
-#include "../DW3000/decadriver/deca_regs.h"
-#include "../Dw3000/decadriver/deca_types.h"
-#include "../DW3000/platform/deca_spi.h"
+#error "请定义 USE_DW1000 或 USE_DW3000（由 CMake 目标 TAG_DW1000 / TAG_DW3000 提供）"
 #endif
 
 #include "usart.h"
@@ -122,26 +117,13 @@ typedef int32_t  int32;
 #define ONE_SLOT_TIME_MS_6P8M           15
 #endif
 
-#define FINAL_RX_TIMEOUT_6P8M           600
-#define RESP_RX_TIMEOUT_6P8M            450
-#define FIRST_RESP_SEND_6P8M            900     //6.8M通信速率下，第一个resp消息发送延时
-#define DATA_INTERVAL_TIME_6P8M         1100    //6.8M通信速率下，相邻消息间隔时间
-#define ANC_RESP_SEND_BACK_6P8M         100     //6.8M通信速率下，基站延后发送RESP消息时间
-#define TAG_FINALE_SEND_BACK_6P8M       100     //6.8M通信速率下，标签延后发送FINAL消息时间
-
-#define FINAL_RX_TIMEOUT_110K           6000
-#define RESP_RX_TIMEOUT_110K            3800
-#define FIRST_RESP_SEND_110K            3000    //110K通信速率下，第一个resp消息发送延时
-#define DATA_INTERVAL_TIME_110K         3900    //110K通信速率下，相邻消息间隔时间
-#define ANC_RESP_SEND_BACK_110K         1080    //110K通信速率下，基站延后发送RESP消息时间
-#define TAG_FINALE_SEND_BACK_110K       1080    //110K通信速率下，标签延后发送FINAL消息时间
-
-#define FINAL_RX_TIMEOUT_850K           1300
-#define RESP_RX_TIMEOUT_850K            1000
-#define FIRST_RESP_SEND_850K            1300    //850K通信速率下，第一个resp消息发送延时
-#define DATA_INTERVAL_TIME_850K         1600    //850K通信速率下，相邻消息间隔时间
-#define ANC_RESP_SEND_BACK_850K         300     //850K通信速率下，基站延后发送RESP消息时间
-#define TAG_FINALE_SEND_BACK_850K       300     //850K通信速率下，标签延后发送FINAL消息时间
+/************************************** TWR 时序常量（TREK1000 同源） ***************************************/
+/* 所有 TWR 时序由 twr_set_replydelay()（dw_main.c，移植 TREK instance_set_replydelay）
+ * 按帧长公式统一算出并装填 twr_timings，不再有按速率展开的时序宏
+ * （旧的 FIRST_RESP_SEND_* / DATA_INTERVAL_TIME_* / TAG_FINALE_SEND_BACK_* 等三档宏已删除）。
+ * 双端约定与参考数值见 ../Anchor_RTOS/docs/TWR_TIMING.md，与基站必须同源同值。 */
+#define DW_RX_ON_DELAY                  16      // us，DW 接收机使能到可收数据的开机延时
+#define RX_RESPONSE_TURNAROUND          500     // us，帧间处理翻转余量（双端必须同值，基站实测收紧时一起改）
 
 #define MAX_POLL_SEND_SLEEP_COUNT       150     //MAX_POLL_SEND_SLEEP_COUNT次发送后无运动则进入休眠
 #define ANC_RANGE_COUNT                 5       //自标定时每个基站测距次数
@@ -266,9 +248,39 @@ typedef enum
 /* 系统运行角色 */
 typedef enum
 {
-    TAG, 
+    TAG,
     ANCHOR
 } instanceModes;
+
+/******************************************************TWR Timings*************************************************************/
+/* 统一时序参数集（TREK instance_set_replydelay 的输出字段），
+ * init 时由 twr_set_replydelay() 装填一次，标签全部收发时序引用本结构（与基站 instance_data_t.timings 同构同值）。
+ * 32h = 40bit DW 设备时间的高 32 位（即 >>8）；sy = symbol（1.0256us，dwt_setrxtimeout 原生单位）。
+ * TREK 时序模型：统一槽间隔，首个 resp 槽 = poll TX + 1×fixedReplyDelay，逐槽 +1×；
+ * delayed TX 编程的是 RMARKER 时刻，delayed RX 编程的是开机时刻，开窗须提前一个前导码。 */
+typedef struct {
+    uint32_t fixedReplyDelayAnc32h;   // 统一槽间隔 = devtime(resp整帧 + RX_RESPONSE_TURNAROUND) >> 8
+    uint32_t preambleDuration32h;     // 前导码时长(devtime>>8) + DW_RX_ON_DELAY，delayed RX 开窗提前量
+    uint32_t pollTx2FinalTxDelay32h;  // poll TX → final TX 总延时(devtime>>8) = (N+1)×fixedReplyDelay，与基站同公式
+    uint16_t fixedReplyDelay_sy;      // 槽间隔的 symbol 表示（标签暂未用，保留与基站同构，boot log 对账用）
+    uint16_t fwto4RespFrame_sy;       // resp 帧接收超时（symbol）
+    uint16_t fwto4FinalFrame_sy;      // final 帧接收超时（symbol，标签不收 final，仅供对账）
+} twrTimings_t;
+
+/******************************************************SuperFrame Config******************************************************/
+/* 超帧配置（与基站 sfConfig_t 同构）。基站侧该结构是死代码，标签侧是活配置：
+ * init 时由 inst_one_slot_time / inst_slot_number 填充，测距周期 next_period_time 直接读 tagPeriod_ms。 */
+typedef struct
+{
+    uint16 slotDuration_ms ;       // 单 slot 时长（一个标签同所有基站完成一轮 TWR 的时间）
+    uint16 numSlots ;              // 超帧内 slot 个数（系统内最大标签容量）
+    uint16 sfPeriod_ms ;           // 超帧周期 = slotDuration_ms × numSlots
+    uint16 tagPeriod_ms ;          // 标签测距周期（= 超帧周期，保证各标签互不干扰；Phase 2 睡眠周期同此）
+    uint16 pollTxToFinalTxDly_us ; // poll TX → final TX 总延时，由 twr_set_replydelay() 导出，供打印/校核
+} sfConfig_t ;
+
+extern twrTimings_t twr_timings;                      //TWR 统一时序参数（twr_set_replydelay() 装填）
+extern sfConfig_t   sfConfig;                         //超帧配置（init 装填）
 
 extern uint8_t instance_mode;                         //设备运行角色
 extern uint8_t dev_id;                                         //设备ID
@@ -291,11 +303,6 @@ extern float rx_power;
 extern uint16_t inst_slot_number;
 extern uint8_t inst_dataRate; 
 extern uint8_t inst_one_slot_time;
-extern uint32_t inst_final_rx_timeout;
-extern uint32_t inst_resp_rx_timeout;
-extern uint32_t inst_init_rx_timeout;                          
-extern uint64_t inst_poll2final_time;
-extern uint32_t inst_data_interval;
 extern uint16 ant_dly;
 extern double distance_now_m;  
 extern int32 distance_offset_cm;                               //距离校准，单位cm
@@ -335,5 +342,4 @@ void anc_rx_to_cb(const dwt_cb_data_t *cb_data);
 void anc_rx_err_cb(const dwt_cb_data_t *cb_data);
 void anc_tx_conf_cb(const dwt_cb_data_t *cb_data);
 
-void delay500ms(void);
 #endif

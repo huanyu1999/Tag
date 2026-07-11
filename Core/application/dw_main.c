@@ -1,4 +1,4 @@
-#include "instance.h"
+#include "dw_instance.h"
 #include "log.h"                                        //SEGGER RTT 调试日志（USART1 留给上位机协议）
 
 uint8_t switch8 = 0;                                    //拨码开关键值
@@ -22,12 +22,9 @@ uint16_t inst_slot_number;                              //系统内最大标签�
 uint8_t inst_dataRate;                                  //通信速率，用于根据当前110K还是6.8M确定数据超时等通信过程相关参数
 uint8_t inst_ch;                                        //信道号Channel number
 uint8_t inst_prf;                                       //PRF
-uint8_t inst_one_slot_time;                             //一个slot的时间，根据通信速率不同而不同，单位ms
-uint32_t inst_final_rx_timeout;                         //基站final接收超时时间，根据通信速率不同而不同，单位us
-uint32_t inst_resp_rx_timeout;                          //标签发送poll后接收resp超时时间，根据通信速率不同而不同，单位us
-// uint32_t inst_init_rx_timeout;                          //标签发送blink后接收init超时时间，根据通信速率不同而不同，单位us
-uint64_t inst_poll2final_time;                          //单TWR周期poll起始到final结束的总时间
-uint32_t inst_data_interval;                            //相邻两条数据的间隔，如poll和第一个resp的间隔，resp1和resp2的间隔，根据通信速率不同而不同，单位us
+uint8_t inst_one_slot_time;                             //一个slot的时间，根据通信速率不同而不同，单位ms（超帧配置输入）
+twrTimings_t twr_timings;                               //TWR 统一时序参数，由 twr_set_replydelay() 在 init 时装填一次
+sfConfig_t   sfConfig;                                  //超帧配置，init 时按 inst_one_slot_time / inst_slot_number 填充
 uint16 ant_dly = ANT_DLY;                               //天线延时
 uint32 tx_power;                                        //发射增益代码
 uint8_t UART_RX_BUF[200];                               //串口接收BUF
@@ -44,7 +41,7 @@ uint32_t last_range_ok_tick = 0;						//最后一次成功测距的时间戳
 /* 没有板载EEPROM */
 uint8_t USE_EEPROM = 0;  
 
-#define TAG_ID 0x07
+#define TAG_ID 0x0F
 /*******************************************************SPI DMA 读写完成标志********************************************************/
 volatile uint8_t dw1000_spiDmaCpltFlag = 0;
 volatile uint8_t dw1000_spiDmaBusyFlag = 0;
@@ -178,6 +175,148 @@ static dwt_txconfig_t txconfig_options = {
 };
 #endif
 
+/******************************************** TWR 时序计算（TREK1000 同源）********************************************
+ * 自 ../Anchor_RTOS/01_Core/App/Src/dw_main.c 逐字移植，双端必须同公式同参数，否则空口槽位对不上。
+ * 字段语义见 dw_instance.h twrTimings_t，双端约定与参考数值见 ../Anchor_RTOS/docs/TWR_TIMING.md。
+ *********************************************************************************************************************/
+static float calc_length_data(float msgdatalen)
+{
+    int x = 0;
+
+    /*
+        根据802.15.4 UWB PHY 规定,PSDU 数据要经过 RS(63,55) 编码:
+        每 330 bits 数据为一块, 每块附加 48 bits 校验
+    */
+    x = ((int)msgdatalen * 8 + 329) / 330;      // 不足330bits 的尾块也要按一整块加 48 bits，整数向上取整（避免 libm 的 ceil）
+    msgdatalen = msgdatalen * 8.0f + x * 48.0f; // 计算总的编码后数据长度，单位bits，每个330bits数据块加上48bits校验码
+
+    // Assume PHR length is 172308ns for 110k and 21539ns for 850k/6.8M.
+#if defined(USE_DW1000)
+    if (inst_dataRate == DWT_BR_110K)
+    {
+        msgdatalen *= 8205.13f;
+        msgdatalen += 172308.0f;
+    }
+    else
+#endif
+    if (inst_dataRate == DWT_BR_850K)
+    {
+        msgdatalen *= 1025.64f; // 以850K为例，计算出来的总的bit数，乘上每个bit占用的时间
+        msgdatalen += 21539.0f; // 加上PHR的占用时间
+    }
+    else
+    {
+        msgdatalen *= 128.21f;
+        msgdatalen += 21539.0f;
+    }
+
+    return msgdatalen;         // 返回计算完成的的air time，单位ns
+}
+
+/* 前导码长度（symbol 数），从 RF 配置枚举反查。
+ * 仅列出两种芯片 SDK 都有的档位，本项目实际只用 256/1024 */
+static uint16_t plen_symbols(const dwt_config_t *rf)
+{
+    switch (rf->txPreambLength)
+    {
+    case DWT_PLEN_64:   return 64;
+    case DWT_PLEN_128:  return 128;
+    case DWT_PLEN_256:  return 256;
+    case DWT_PLEN_512:  return 512;
+    case DWT_PLEN_1024: return 1024;
+    default:            return 1024;
+    }
+}
+
+/* DW 非标 SFD 长度按速率（TREK dwnsSFDlen[] 同值）：110K=64, 850K=16, 6M8=8 */
+static uint8_t sfd_length(void)
+{
+#if defined(USE_DW1000)
+    if (inst_dataRate == DWT_BR_110K)
+    {
+        return 64;
+    }
+#endif
+    return (inst_dataRate == DWT_BR_850K) ? 16 : 8;
+}
+
+/* us → DW 设备时间单位（40bit，~15.65ps/tick），TREK instance_convert_usec_to_devtimeu 移植 */
+static uint64_t conv_us_to_devtime(double microsecu)
+{
+    return (uint64_t)((microsecu / (double)DWT_TIME_UNITS) / 1e6);
+}
+
+/* 统一计算 TWR 时序，TREK1000 instance_set_replydelay()（instance_common.c）移植，
+ * dwt_configure 之后调用一次。全部时序（含 final 时刻）由帧长公式导出，无按速率展开的时序宏。
+ * 调用前须先确定 inst_dataRate / inst_one_slot_time / inst_slot_number。 */
+static void twr_set_replydelay(const dwt_config_t *rf)
+{
+    twrTimings_t *t = &twr_timings;
+    int margin = 3000;      // ns，接收超时里的帧长余量（TREK 同值）
+
+    /* 帧长 air time(ns)：MSG_LEN 为 MHR+载荷，FCS 也在空口飞，须计入（TREK 含 FRAME_CRC）。
+     * 槽间隔只由 resp 帧长决定，故标签的 POLL_MSG_LEN 与基站不同不影响双端对齐 */
+    float msgdatalen_resp  = calc_length_data(RESP_MSG_LEN  + FCS_LEN);
+    float msgdatalen_final = calc_length_data(FIANL_MSG_LEN + FCS_LEN);
+
+    /* 前导码时长(us)：PRF64 符号 1.01763us，PRF16 用 0.99359us */
+#if defined(USE_DW1000)
+    float sym_us = (rf->prf == DWT_PRF_16M) ? 0.99359f : 1.01763f;
+#else
+    float sym_us = 1.01763f;    // DW3000 本工程固定 PRF64（txCode 9~24 隐含）
+#endif
+    float preamble_us = (plen_symbols(rf) + sfd_length()) * sym_us;
+
+    /* resp 整帧时长(us)与统一槽间隔(us) */
+    float respframe_us   = preamble_us + msgdatalen_resp / 1000.0f;
+    float replyDelay_us  = respframe_us + RX_RESPONSE_TURNAROUND; // 一个 resp 帧占用信道的时间 + 双方处理该帧并执行下一步动作的时间
+
+    /* 接收超时(symbol)：RX 开机延时 + 前导码 + 数据段 + 余量 */
+    int respframe_sy  = DW_RX_ON_DELAY + (int)((preamble_us + (msgdatalen_resp  + margin) / 1000.0f) / 1.0256f);
+    int finalframe_sy = DW_RX_ON_DELAY + (int)((preamble_us + (msgdatalen_final + margin) / 1000.0f) / 1.0256f);
+
+    t->fixedReplyDelayAnc32h  = (uint32_t)(conv_us_to_devtime(replyDelay_us) >> 8);
+    t->fixedReplyDelay_sy     = (uint16_t)(replyDelay_us / 1.0256f); // 转换成symbol
+    t->preambleDuration32h    = (uint32_t)(conv_us_to_devtime(preamble_us) >> 8) + DW_RX_ON_DELAY;
+
+    /* 标签 final 时刻 = poll TX + (N+1)×槽间隔（基站按同公式开 final 接收窗）。
+     * 不能取 N×：最后一个 resp 槽的数据段在其 RMARKER 之后还要飞，而 final 的前导码
+     * 在 final RMARKER 之前就开始飞，(N+1)× 天然留出一个槽的间隔避免空口重叠 */
+    t->pollTx2FinalTxDelay32h = (MAX_AHCHOR_NUMBER + 1) * t->fixedReplyDelayAnc32h;
+    t->fwto4RespFrame_sy      = (uint16_t)respframe_sy;              // fwto: frame wait timeout
+    t->fwto4FinalFrame_sy     = (uint16_t)(finalframe_sy + 200);     // 加余量防过早超时（TREK 同值）
+
+    uint32_t finalDelay_us = (uint32_t)((MAX_AHCHOR_NUMBER + 1) * replyDelay_us);
+    sfConfig.pollTxToFinalTxDly_us = (uint16)finalDelay_us;          // 由公式导出，供打印/校核
+
+    LOG_I("TWR timing: replyDelay=%uus(32h=%lu) preamble=%uus fwtoResp=%usy fwtoFinal=%usy pollTx2Final=%uus",
+          (unsigned)replyDelay_us,
+          (unsigned long)t->fixedReplyDelayAnc32h,
+          (unsigned)preamble_us,
+          (unsigned)t->fwto4RespFrame_sy,
+          (unsigned)t->fwto4FinalFrame_sy,
+          (unsigned)finalDelay_us);
+
+    /* 单次 T2A 交换必须放得进一个 slot：poll 前导 + pollTx→finalTx 总延时 + final 数据段。
+     * （标签不参与 A2A，故不做基站那条 A2A 检查） */
+    uint32_t t2a_us  = (uint32_t)(preamble_us + finalDelay_us + msgdatalen_final / 1000.0f);
+    uint32_t slot_us = (uint32_t)inst_one_slot_time * 1000U;
+    if (t2a_us > slot_us)
+    {
+        LOG_E("TWR exchange exceeds slot %ums! T2A=%uus", inst_one_slot_time, (unsigned)t2a_us);
+    }
+}
+
+/* 超帧配置装填：须在 inst_one_slot_time / inst_slot_number 确定之后调用 */
+static void sf_config_init(void)
+{
+    sfConfig.slotDuration_ms = inst_one_slot_time;                      // 850K 下 12ms
+    sfConfig.numSlots        = inst_slot_number;                        // MAX_TAG_NUMBER = 50
+    sfConfig.sfPeriod_ms     = inst_one_slot_time * inst_slot_number;   // 600ms，与基站一致
+    sfConfig.tagPeriod_ms    = sfConfig.sfPeriod_ms;                    // 标签测距周期 = 超帧周期
+    /* pollTxToFinalTxDly_us 由 twr_set_replydelay() 填 */
+}
+
 #if defined(USE_DW1000)
 static void dw1000_init(void)
 {
@@ -205,32 +344,23 @@ static void dw1000_init(void)
     inst_dataRate = current_rfConfig->dataRate;
     inst_ch       = current_rfConfig->chan;
 
-    /* 配置通信相关时序 */
+    /* 超帧 slot 时长按速率选择；其余 TWR 时序统一由 twr_set_replydelay() 按帧长公式算出 */
     if(inst_dataRate == DWT_BR_6M8)
     {
-        inst_one_slot_time    = ONE_SLOT_TIME_MS_6P8M;
-        inst_final_rx_timeout = FINAL_RX_TIMEOUT_6P8M;
-        inst_resp_rx_timeout  = RESP_RX_TIMEOUT_6P8M;
-        inst_data_interval    = DATA_INTERVAL_TIME_6P8M;
-        inst_poll2final_time  = ((FIRST_RESP_SEND_6P8M +  MAX_AHCHOR_NUMBER * inst_data_interval) * UUS_TO_DWT_TIME);
+        inst_one_slot_time = ONE_SLOT_TIME_MS_6P8M;
     }
     else if(inst_dataRate == DWT_BR_110K)
     {
-        inst_one_slot_time    = ONE_SLOT_TIME_MS_110K;
-        inst_final_rx_timeout = FINAL_RX_TIMEOUT_110K;
-        inst_resp_rx_timeout  = RESP_RX_TIMEOUT_110K;
-        inst_data_interval    = DATA_INTERVAL_TIME_110K;
-        inst_poll2final_time  = ((FIRST_RESP_SEND_110K +  MAX_AHCHOR_NUMBER * inst_data_interval) * UUS_TO_DWT_TIME);
+        inst_one_slot_time = ONE_SLOT_TIME_MS_110K;
     }
-    else if(inst_dataRate == DWT_BR_850K) 
+    else
     {
-        inst_one_slot_time    = ONE_SLOT_TIME_MS_850K;
-        inst_final_rx_timeout = FINAL_RX_TIMEOUT_850K;
-        inst_resp_rx_timeout  = RESP_RX_TIMEOUT_850K;
-        inst_data_interval    = DATA_INTERVAL_TIME_850K;
-        inst_poll2final_time  = ((FIRST_RESP_SEND_850K +  MAX_AHCHOR_NUMBER * inst_data_interval) * UUS_TO_DWT_TIME);
+        inst_one_slot_time = ONE_SLOT_TIME_MS_850K;
     }
-    
+    sf_config_init();
+    twr_set_replydelay(current_rfConfig);
+
+
 #if (USE_EEPROM == 1) //板载EEPROM
     {
         uint8_t tx_pwr_read[EEP_UNIT_SIZE]={0};
@@ -387,23 +517,18 @@ static void dw3000_init(void)
     inst_dataRate = current_rfConfig->dataRate;
     inst_ch       = current_rfConfig->chan;
 
-    /* 配置通信相关时序（DW3000 不支持 110K，仅 850K/6.8M）*/
+    /* 超帧 slot 时长按速率选择（DW3000 不支持 110K，仅 850K/6.8M）；
+     * 其余 TWR 时序统一由 twr_set_replydelay() 按帧长公式算出 */
     if(inst_dataRate == DWT_BR_6M8)
     {
-        inst_one_slot_time    = ONE_SLOT_TIME_MS_6P8M;
-        inst_final_rx_timeout = FINAL_RX_TIMEOUT_6P8M;
-        inst_resp_rx_timeout  = RESP_RX_TIMEOUT_6P8M;
-        inst_data_interval    = DATA_INTERVAL_TIME_6P8M;
-        inst_poll2final_time  = ((FIRST_RESP_SEND_6P8M +  MAX_AHCHOR_NUMBER * inst_data_interval) * UUS_TO_DWT_TIME);
+        inst_one_slot_time = ONE_SLOT_TIME_MS_6P8M;
     }
-    else if(inst_dataRate == DWT_BR_850K)
+    else
     {
-        inst_one_slot_time    = ONE_SLOT_TIME_MS_850K;
-        inst_final_rx_timeout = FINAL_RX_TIMEOUT_850K;
-        inst_resp_rx_timeout  = RESP_RX_TIMEOUT_850K;
-        inst_data_interval    = DATA_INTERVAL_TIME_850K;
-        inst_poll2final_time  = ((FIRST_RESP_SEND_850K +  MAX_AHCHOR_NUMBER * inst_data_interval) * UUS_TO_DWT_TIME);
+        inst_one_slot_time = ONE_SLOT_TIME_MS_850K;
     }
+    sf_config_init();
+    twr_set_replydelay(current_rfConfig);
 
     txconfig_options.power = TX_POWER;
     tx_power = txconfig_options.power;
@@ -546,17 +671,9 @@ void print_config(void)
     const char *baud_str = (inst_dataRate == DWT_BR_6M8)  ? "6.8M" : "850K";  // DW3000 无 110K
 #endif
     LOG_RAW("* baud_rate = %s\r\n* channel = CH%d\r\n", baud_str, inst_ch);
-    LOG_RAW("* data_rate = %dHz\r\n* update_time = %dms\r\n* kalmanfilter = %d\r\n", 1000 / (inst_slot_number * inst_one_slot_time), inst_slot_number * inst_one_slot_time, (switch8 & SWS1_KAM_MODE)? 1:0);
+    LOG_RAW("* data_rate = %dHz\r\n* update_time = %dms\r\n* kalmanfilter = %d\r\n", 1000 / sfConfig.sfPeriod_ms, sfConfig.sfPeriod_ms, (switch8 & SWS1_KAM_MODE)? 1:0);
     LOG_RAW("* ant_dly  = %d\r\n* tx_power = %08lx\r\n", ant_dly, tx_power);
     LOG_RAW("***************************************************\r\n");
-}
-
-void delay500ms(void)
-{
-    unsigned char i,j,k;
-    for(i=15;i>0;i--)
-        for(j=202;j>0;j--)
-            for(k=81;k>0;k--);
 }
 
 void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
@@ -578,89 +695,3 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
         dw1000_spiDmaBusyFlag = 0;
     }
 }
-
-//static dwt_config_t uwb_config_channel7[] = {
-//    {   /* uwb_config0，channel7 脉冲频率64M 前导码长度128 数据率 6M8 */
-//        .chan = 7,
-//        .prf = DWT_PRF_64M,
-//        .txPreambLength = DWT_PLEN_128,
-//        .rxPAC = DWT_PAC8,
-//        .txCode = 19,
-//        .rxCode = 20,
-//        .nsSFD = 1,
-//        .dataRate = DWT_BR_6M8,
-//        .phrMode = DWT_PHRMODE_STD,
-//        .sfdTO = (129 + DW_NS_SFD_LEN_6M8 - 8)
-//    },
-//    {   /* uwb_config1，channel7 脉冲频率64M 前导码长度256 数据率 6M8 */
-//        .chan = 7,
-//        .prf = DWT_PRF_64M,
-//        .txPreambLength = DWT_PLEN_256,
-//        .rxPAC = DWT_PAC16,
-//        .txCode = 19,
-//        .rxCode = 20,
-//        .nsSFD = 1,
-//        .dataRate = DWT_BR_6M8,
-//        .phrMode = DWT_PHRMODE_STD,
-//        .sfdTO = (257 + DW_NS_SFD_LEN_6M8 - 16)
-//    }, 
-//    {   /* uwb_config2，channel7 脉冲频率64M 前导码长度256 数据率 850K */
-//        .chan = 7,
-//        .prf = DWT_PRF_64M,
-//        .txPreambLength = DWT_PLEN_256,
-//        .rxPAC = DWT_PAC16,
-//        .txCode = 19,
-//        .rxCode = 20,
-//        .nsSFD = 1,
-//        .dataRate = DWT_BR_850K,
-//        .phrMode = DWT_PHRMODE_STD,
-//        .sfdTO = (257 + DW_NS_SFD_LEN_850K - 16)
-//    }, 
-//};
-
-//void read_anc_coord(void)
-//{
-//    char anc_coord_read[56];
-//    char coord_cut_data[15][10];
-//    E2prom_Read(ANC_COORD_ADDR, (uint8_t*)anc_coord_read, 56);
-//    if(anc_coord_read[0] == '$')
-//    {
-//        char *ptr, *retptr;
-//        ptr = anc_coord_read;
-//        uint8_t i = 0;
-
-//        while((retptr=strtok(ptr,",")) != NULL)
-//        {
-//            strcpy(coord_cut_data[i], retptr);
-//            ptr = NULL;
-//            i++;
-//        }
-
-//        anchorArray[0].x = atof(coord_cut_data[1]);
-//        anchorArray[0].y = atof(coord_cut_data[2]);
-//        anchorArray[0].z = atof(coord_cut_data[3]);
-
-//        anchorArray[1].x = atof(coord_cut_data[4]);
-//        anchorArray[1].y = atof(coord_cut_data[5]);
-//        anchorArray[1].z = atof(coord_cut_data[6]);
-
-//        anchorArray[2].x = atof(coord_cut_data[7]);
-//        anchorArray[2].y = atof(coord_cut_data[8]);
-//        anchorArray[2].z = atof(coord_cut_data[9]);
-
-//        anchorArray[3].x = atof(coord_cut_data[10]);
-//        anchorArray[3].y = atof(coord_cut_data[11]);
-//        anchorArray[3].z = atof(coord_cut_data[12]);
-//    }
-//}
-
-/*
-    串口指令集，注意发送指令以$开头，以\r\n结尾
-    $rboot            重启
-    $rantdly          查询天线延时参数
-    $reset            恢复默认参数
-    $santdly,16375    设置天线延时参数（10进制）
-    $stxpwr,1f1f1f1f  设置发射增益参数（16进制）
-    $sanccd,0,0,2,0,3.1,2,3.1,0,2,3.1,3.1,2  设置基站坐标A0.X,A0.Y,A0.Z,A1.X,A1,Y,A1,Z,A2.X,A2,Y,A2,Z,A3.X,A3,Y,A3,Z
-    $sdata,abcdefg
-*/

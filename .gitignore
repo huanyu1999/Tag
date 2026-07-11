@@ -45,6 +45,9 @@ JLinkLog.txt
 *.json
 .vscode
 
+#clangd
+.cache
+
 #EIDE file 
 build
 *.clang-format
