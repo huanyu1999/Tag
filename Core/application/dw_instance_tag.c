@@ -27,6 +27,7 @@ static uint8_t resp_valid = 0x00;               // 基站数据有效标志
 uint32 diff_time;                               // 标签增加发起测距随机时间，避免冲突
 static uint8_t led_flag = 0;
 static uint32_t led_time = 0;
+static uint8_t dw_sleeping = 0;                 // DW 芯片当前是否处于深睡（STA_IDLE 据此决定何时唤醒）
 
 static inline uint64_t get_tx_timestamp_u64(void);
 static inline uint64_t get_rx_timestamp_u64(void);
@@ -54,6 +55,24 @@ static uint32_t tag_calc_resp_rx_time(uint64_t poll_ts, uint8_t resp_index)
 static uint32_t tag_calc_final_tx_time(uint64_t poll_ts)
 {
     return (uint32_t)(poll_ts >> 8) + twr_timings.pollTx2FinalTxDelay32h;
+}
+
+/* 本轮测距收尾（成功或任何一步失败都走这里）：定下轮唤醒时刻 → DW 进深睡 → 回 STA_IDLE。
+ * 对应 TREK 的 nextPeriod = tagSleepRnd + tagSleepTime + tagSleepCorrection：
+ *   - tagPeriod_ms       = 超帧周期，标签固定按此周期发起下一轮（sfConfig，600ms）
+ *   - tagSleepCorrection = A0 在 resp 里下发的时隙校准量，只用一次，用完清零
+ *   - diff_time          = 未被校准过的标签（刚上电）叠加的伪随机抖动，防两台标签一直撞车
+ * 收拢前这段逻辑散在 6 处且互相不一致（错误分支漏了 correction，成功分支漏了 diff_time），
+ * 现统一为一份 —— Phase 3 的 discovery 回退也从这里分流。 */
+static void tag_round_end(void)
+{
+    next_period_time = range_time + sfConfig.tagPeriod_ms + tagSleepCorrection_ms
+                     + ((Correction_flag == 1) ? 0 : diff_time);
+    tagSleepCorrection_ms = 0;
+
+    tag_dw_entersleep();        //DW 深睡，直到 STA_IDLE 里提前 DW_WAKEUP_LEAD_MS 唤醒
+    dw_sleeping = 1;
+    state = STA_IDLE;
 }
 
 void tag_app(void)
@@ -106,8 +125,7 @@ void tag_app(void)
         int ret = dwt_starttx(DWT_START_TX_IMMEDIATE);           // 立即发送POLL消息
         if (ret == DWT_ERROR)
         {
-            next_period_time = range_time + sfConfig.tagPeriod_ms + ((Correction_flag == 1)?0:(diff_time));  //如该标签未被时序校准，初次上电，增加随机时间，避免一直冲突      
-            state = STA_IDLE;
+            tag_round_end();    //定下轮周期 + DW 深睡 + 回 STA_IDLE
             break;
         }
         while (tx_status == TX_WAIT);                       // 等待发送成功，tx_status在发送成功中断内变更状态
@@ -124,8 +142,7 @@ void tag_app(void)
         ret = dwt_rxenable(DWT_START_RX_DELAYED);   // 延时开启接收机
         if (ret == DWT_ERROR)
         {
-            next_period_time = range_time + sfConfig.tagPeriod_ms + ((Correction_flag == 1)?0:(diff_time));  //如该标签未被时序校准，初次上电，增加随机时间，避免一直冲突      
-            state = STA_IDLE;
+            tag_round_end();    //定下轮周期 + DW 深睡 + 回 STA_IDLE
             break;
         }
         alarm = 0;
@@ -169,8 +186,7 @@ void tag_app(void)
         static uint8_t no_resp_count = 0;   // 未接收到任何基站回复的周期计数
         if ((rx_status == RX_OK) && (rx_buffer[FUNC_CODE_IDX] != FUNC_CODE_RESP))    // 接收消息成功，但是消息不是resp消息则直接进入IDLE
         {
-            next_period_time = range_time + sfConfig.tagPeriod_ms + ((Correction_flag == 1) ? 0 : (diff_time));  //如该标签未被时序校准，初次上电，增加随机时间，避免一直冲突      
-            state = STA_IDLE;
+            tag_round_end();    //定下轮周期 + DW 深睡 + 回 STA_IDLE
         }
         else
         {
@@ -220,8 +236,7 @@ void tag_app(void)
                         Correction_flag = 0;
                         no_resp_count = 0;
                     }
-                    next_period_time = range_time + sfConfig.tagPeriod_ms + ((Correction_flag == 1) ? (0) : (diff_time));  //如该标签未被时序校准，初次上电，增加随机时间，避免一直冲突
-                    state = STA_IDLE;
+                    tag_round_end();    //定下轮周期 + DW 深睡 + 回 STA_IDLE
                     range_status = RANGE_ERROR; 
                     break;
                 }
@@ -246,8 +261,7 @@ void tag_app(void)
                 int ret = dwt_rxenable(DWT_START_RX_DELAYED);       // 延时开启接收机
                 if(ret == DWT_ERROR)
                 {
-                    next_period_time = range_time + sfConfig.tagPeriod_ms + ((Correction_flag == 1)?0:(diff_time)); // 如该标签未被时序校准，初次上电，增加随机时间，避免一直冲突
-                    state = STA_IDLE;
+                    tag_round_end();    //定下轮周期 + DW 深睡 + 回 STA_IDLE
                     break;
                 }
                 state = STA_WAIT_RESP;
@@ -300,16 +314,13 @@ void tag_app(void)
             /* 诊断(临时)：FINAL 延时发送时刻已过 → 发不出去 → 基站收不到 FINAL → 测不出距离。
              * 只在失败分支打印(本周期已放弃，不影响时序)。排查完可删。 */
             LOG_W("FINAL tx FAILED (delayed time passed), rb=%d", range_nb);
-            next_period_time = range_time + sfConfig.tagPeriod_ms;//设置下个周期开始时间
-            state = STA_IDLE;
+            tag_round_end();    //定下轮周期 + DW 深睡 + 回 STA_IDLE
             break;
         }
         while(tx_status == TX_WAIT);            // 等待发送成功，tx_status在发送成功中断内变更状态
         tx_status = TX_WAIT;                    // 清标志
         range_status = RANGE_TWR_OK;            // 设置TWR成功测距标志，在dw_main.c里判断打包串口输出       
-        next_period_time = range_time + sfConfig.tagPeriod_ms + tagSleepCorrection_ms;  //设置下个周期开始时间
-        tagSleepCorrection_ms = 0;
-        state = STA_IDLE;
+        tag_round_end();    //定下轮周期 + DW 深睡 + 回 STA_IDLE
         break;
     }
         
@@ -340,8 +351,21 @@ void tag_app(void)
         else
 #endif
         {
+            /* 提前 DW_WAKEUP_LEAD_MS 把 DW 唤醒并重下配置（唤醒本身 ~2.2ms），
+             * 保证到点时芯片已就绪，能立刻发 poll。 */
+            if(dw_sleeping && (nowtime + DW_WAKEUP_LEAD_MS >= next_period_time))
+            {
+                tag_dw_wakeup();
+                dw_sleeping = 0;
+            }
+
             if(nowtime >= next_period_time)  //下个周期发送时间到
             {
+                if(dw_sleeping)              //兜底：唤醒窗被错过（如被长中断挤掉），到点补唤醒
+                {
+                    tag_dw_wakeup();
+                    dw_sleeping = 0;
+                }
                 dwt_forcetrxoff();
 //              battery = 0;
 //              if(USE_CW2015 == 1)
@@ -371,6 +395,12 @@ void tag_app(void)
             }
             led_flag = !led_flag;
         }
+
+        /* 本轮已收尾、下轮未到点：MCU 进 Sleep 等中断（SysTick 1ms / TIM2 报警 4Hz / ADC / UART
+         * 都能唤醒），配合 DW 深睡才有实际省电意义。
+         * 只能放在 STA_IDLE：TWR 交换过程中那些 500us 级忙等（while(tx_status == TX_WAIT)）
+         * 靠回调翻标志位，WFI 进去也会被 DW 中断立刻唤醒，但没必要且会打乱时序，保持忙等。 */
+        __WFI();
         break;
     }
 

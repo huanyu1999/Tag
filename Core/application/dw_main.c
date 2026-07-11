@@ -307,6 +307,35 @@ static void twr_set_replydelay(const dwt_config_t *rf)
     }
 }
 
+/* 深睡不保留的芯片配置，唤醒后必须整套重下。
+ * init 与 tag_dw_wakeup()（dw_power.c）共用同一份，防止"改了 init 忘了改唤醒路径"的漂移
+ * —— 那类 bug 的表现是上电第一轮正常、睡醒之后就不对了，极难排。
+ * 用的是当前的 ant_dly / txconfig_options（而非宏），所以 EEPROM 路径生效时也对。
+ * 不含 dwt_setleds()：唤醒不需要 init blink，且 LED 白耗电。 */
+void dw_apply_runtime_config(void)
+{
+    dwt_setrxantennadelay(ant_dly);                 //天线延时：漏下会导致测距系统性偏移数米
+    dwt_settxantennadelay(ant_dly);
+    dwt_configuretxrf(&txconfig_options);           //发射功率和pg值
+    dwt_setpanid(PAN_ID);                           //PAN ID 组号
+
+#if defined(USE_DW1000)
+    dwt_enableframefilter(DWT_FF_DATA_EN | DWT_FF_ACK_EN);
+    dwt_setlnapamode(1, 1);                         //外置PA和LNA控制开启
+    dwt_setinterrupt(DWT_INT_TFRS | DWT_INT_RFCG | (DWT_INT_ARFE | DWT_INT_RFSL | DWT_INT_SFDT
+                   | DWT_INT_RPHE | DWT_INT_RFCE | DWT_INT_RFTO | DWT_INT_RXPTO), 1);
+#elif defined(USE_DW3000)
+    dwt_configureframefilter(DWT_FF_ENABLE_802_15_4, DWT_FF_DATA_EN | DWT_FF_ACK_EN);
+    dwt_setlnapamode(DWT_LNA_ENABLE | DWT_PA_ENABLE);
+    /* 必须使能 ARFE（帧过滤拒绝）中断，否则漏收 poll 又收到发给别人的帧时，
+     * 接收机会被静默关闭、再也收不到后续帧 */
+    dwt_setinterrupt(SYS_ENABLE_LO_TXFRS_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXFCG_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXFTO_ENABLE_BIT_MASK |
+                     SYS_ENABLE_LO_RXPTO_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXPHE_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXFCE_ENABLE_BIT_MASK |
+                     SYS_ENABLE_LO_RXFSL_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXSTO_ENABLE_BIT_MASK |
+                     SYS_ENABLE_LO_ARFE_ENABLE_BIT_MASK, 0, DWT_ENABLE_INT);
+#endif
+}
+
 /* 超帧配置装填：须在 inst_one_slot_time / inst_slot_number 确定之后调用 */
 static void sf_config_init(void)
 {
@@ -390,7 +419,6 @@ static void dw1000_init(void)
         txconfig_options.power = TX_POWER;
     }
     tx_power = txconfig_options.power;
-    dwt_configuretxrf(&txconfig_options);//设置发射功率和pg值
 
 #if (USE_EEPROM == 1) //板载EEPROM
     {
@@ -415,16 +443,10 @@ static void dw1000_init(void)
     {
         ant_dly = ANT_DLY;
     }
-    dwt_setrxantennadelay(ant_dly);                 //设置天线延时
-    dwt_settxantennadelay(ant_dly);
-//    dwt_setrxtimeout(inst_resp_rx_timeout);         //设置接收超时时间
-//    dwt_setpreambledetecttimeout(0);                //设置前导码超时
-
-    dwt_setpanid(PAN_ID);                           //设置PAN ID 组号
-    dwt_enableframefilter(DWT_FF_DATA_EN | DWT_FF_ACK_EN);  //设置帧过滤模式开启
-
-    dwt_setlnapamode(1, 1);//设置外置PA和LNA控制开启
-    dwt_setleds(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK);//设置DW3000控制的收发指示灯开启，低功耗时可注释掉
+    /* 天线延时 / TX功率 / PANID / 帧过滤 / PA-LNA / 中断掩码：与唤醒路径共用同一份 */
+    dw_apply_runtime_config();
+    tag_dw_sleep_config();                          //深睡参数配置，一次即可（见 dw_power.c）
+    dwt_setleds(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK);//设置收发指示灯开启，低功耗时可注释掉
     
     /* 配置角色 */
     instance_mode = TAG; //当前角色控制为标签
@@ -450,8 +472,7 @@ static void dw1000_init(void)
         dev_id = TAG_ID;
     }
 
-    //设置中断标志
-    dwt_setinterrupt(DWT_INT_TFRS | DWT_INT_RFCG | (DWT_INT_ARFE | DWT_INT_RFSL | DWT_INT_SFDT | DWT_INT_RPHE | DWT_INT_RFCE | DWT_INT_RFTO | DWT_INT_RXPTO), 1);
+    /* 中断掩码已在 dw_apply_runtime_config() 里设置（与唤醒路径共用） */
 
     if(instance_mode == ANCHOR)
     {
@@ -532,27 +553,16 @@ static void dw3000_init(void)
 
     txconfig_options.power = TX_POWER;
     tx_power = txconfig_options.power;
-    dwt_configuretxrf(&txconfig_options);   //设置发射功率和pg值
+    ant_dly  = ANT_DLY;
 
-    ant_dly = ANT_DLY;
-    dwt_setrxantennadelay(ant_dly);         //设置天线延时
-    dwt_settxantennadelay(ant_dly);
-
-    dwt_setpanid(PAN_ID);                                                   //设置PAN ID 组号
-    dwt_configureframefilter(DWT_FF_ENABLE_802_15_4, DWT_FF_DATA_EN | DWT_FF_ACK_EN); //设置帧过滤模式开启
-    dwt_setlnapamode(DWT_LNA_ENABLE | DWT_PA_ENABLE);                       //设置外置PA和LNA控制开启
+    /* 天线延时 / TX功率 / PANID / 帧过滤 / PA-LNA / 中断掩码：与唤醒路径共用同一份 */
+    dw_apply_runtime_config();
+    tag_dw_sleep_config();                                                  //深睡参数配置，一次即可（见 dw_power.c）
     dwt_setleds(DWT_LEDS_ENABLE | DWT_LEDS_INIT_BLINK);                     //设置收发指示灯开启
 
     /* 配置角色为标签 */
     instance_mode = TAG;
     dev_id = TAG_ID;
-
-    /* 设置中断标志：必须使能 ARFE（帧过滤拒绝）中断，与 DW1000 路径(DWT_INT_ARFE)对齐，
-     * 否则漏收 poll 又收到发给标签的 resp 帧时，接收机会被静默关闭、再也收不到后续 poll。 */
-    dwt_setinterrupt(SYS_ENABLE_LO_TXFRS_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXFCG_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXFTO_ENABLE_BIT_MASK |
-                     SYS_ENABLE_LO_RXPTO_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXPHE_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXFCE_ENABLE_BIT_MASK |
-                     SYS_ENABLE_LO_RXFSL_ENABLE_BIT_MASK | SYS_ENABLE_LO_RXSTO_ENABLE_BIT_MASK |
-                     SYS_ENABLE_LO_ARFE_ENABLE_BIT_MASK, 0, DWT_ENABLE_INT);
 
     //设置标签的中断回调函数（DW3000 为 6 参数：含 SPI 错误/就绪回调，未用传 NULL）
     dwt_setcallbacks(&tag_tx_conf_cb, &tag_rx_ok_cb, &tag_rx_to_cb, &tag_rx_err_cb, NULL, NULL);

@@ -21,17 +21,22 @@
 
 | 阶段 | 内容 | 状态 | 提交 |
 |------|------|------|------|
-| Phase 0 | CMake 双目标构建打通(接 dw_instance 副本) | 🟡 代码完成,待真机 | 待提交 |
-| Phase 1 | TREK 时序适配(TWR_TIMING.md §5) | 🟡 代码完成,待真机 | 待提交 |
-| Phase 2 | 睡眠唤醒(DW 深睡 + MCU WFI + nextPeriod 公式) | ⬜ 未开始 | — |
+| Phase 0 | CMake 双目标构建打通(接 dw_instance 副本) | ✅ 真机通过 | ae572e5 |
+| Phase 1 | TREK 时序适配(TWR_TIMING.md §5) | ✅ 真机通过(已联调,测距+boot log 正常) | ae572e5 |
+| Phase 2 | 睡眠唤醒(DW 深睡 + MCU WFI + nextPeriod 公式) | 🟡 代码完成,待真机 | 待提交 |
 | Phase 3 | Discovery(blink/RNG_INIT)+ 失联回退 | ⬜ 未开始 | — |
 | Phase 4 | 清理(旧驱动树/旧副本/Keil 退役)+ 文档 | ⬜ 未开始 | — |
 
 ### 当前断点
 
-Phase 0 + Phase 1 代码已完成,**双目标 GCC 编译通过、应用层告警清零**
-(TAG_DW1000 flash 62.7%,TAG_DW3000 flash 68.1%),尚未真机验证、尚未提交。
-下一步:用户烧录 + 与 Phase B 基站联调(见下方"Phase 1 验证"),通过后提交并进入 Phase 2。
+Phase 0 + Phase 1 **已真机通过并提交(ae572e5)**:与 Phase B 基站联调,测距与 boot log 均正常。
+
+Phase 2(睡眠唤醒)代码已完成,双目标编译通过、应用层告警清零
+(TAG_DW1000 flash 62.4%,TAG_DW3000 flash 69.0%),**待真机验证**。
+下一步:用户烧录验证(见下方"Phase 2 验证"),通过后进入 Phase 3(discovery,需基站 Phase C)。
+
+另:VS Code 构建/烧录任务见 `.vscode/tasks.json`(CMake 双目标 + OpenOCD/ST-Link V2,
+被 .gitignore 排除,换电脑需重建)。
 
 #### Phase 0/1 实施记录(与原计划的差异)
 
@@ -58,7 +63,40 @@ Phase 0 + Phase 1 代码已完成,**双目标 GCC 编译通过、应用层告警
 5. `POLL_MSG_LEN` 标签 26 / 基站 16 不一致,但**无害且不要动**:它不参与 `twr_set_replydelay`
    (槽间隔只由 RESP 帧长决定),基站按 `RX_FINFO` 实际长度收帧;标签的 26 是给 `user_data[10]` 留的。
 
-#### Phase 1 验证(待用户执行)
+#### Phase 2 实施记录
+
+1. **新增 `Core/application/dw_power.c`**:`tag_dw_sleep_config()`(init 调一次) /
+   `tag_dw_entersleep()` / `tag_dw_wakeup()`,把 DW1000 与 DW3000 的深睡唤醒差异封装掉,
+   状态机不感知芯片。
+2. **`dw_apply_runtime_config()`(dw_main.c,新)**:深睡**不保留**天线延时 / TX功率 / PANID /
+   帧过滤 / PA-LNA / 中断掩码,唤醒后必须整套重下。这一份被 **init 与唤醒路径共用**,
+   避免"改了 init 忘了改唤醒"的漂移 —— 那类 bug 的表现是上电第一轮正常、睡醒之后就不对了。
+   init 里原先散落的这些调用已全部改为调它。
+3. **`tag_dw_wakeup()` 里额外重下 `dwt_setaddress16(tag_id)`**:短地址与 PANID 同在 PANADR
+   寄存器,深睡是否保留不确定。丢了的表现是帧过滤把基站发给本标签的 resp 全部拒掉 ——
+   "睡醒后再也测不出距离"。一条 SPI 写,买保险。
+4. **DW1000 的 EXTI0 坑**(CLAUDE.md 点名过):`port_wakeup_IC_fast()` 内部最后一步
+   `setup_DW1000RSTnIRQ(0)` 会 `HAL_NVIC_DisableIRQ(EXTI0_IRQn)`,而 DW1000 的 IRQ(PB0) 与
+   RSTn(PA0) 共用 EXTI0。唤醒后不重新 `HAL_NVIC_EnableIRQ(EXTI0_IRQn)`,所有 `dwt_*` 回调
+   永久失效,标签卡死在 STA_WAIT_RESP 的 50ms 看门狗上不断重启。已在 `tag_dw_wakeup()` 里补。
+5. **`tag_round_end()`(dw_instance_tag.c)**:6 处散落的 `next_period_time` 赋值收拢为一份,
+   顺带修掉它们互相不一致的问题(错误分支漏了 tagSleepCorrection,成功分支漏了 diff_time)。
+   公式即 TREK 的 `nextPeriod = tagSleepTime + tagSleepCorrection + tagSleepRnd`。
+   Phase 3 的 discovery 回退也从这里分流。
+6. **`STA_IDLE`**:到点前 `DW_WAKEUP_LEAD_MS`(4ms,唤醒 ~2.2ms + 重下配置余量)先唤醒 DW;
+   到点若发现还在睡(唤醒窗被长中断挤掉)则补唤醒兜底;其余时间 `__WFI()` 让 MCU 进 Sleep。
+   **WFI 只放 STA_IDLE**:TWR 交换内的 500us 级忙等保持忙等,不动。
+
+#### Phase 2 验证(待用户执行)
+
+- [ ] 测距结果与 Phase 1 完全一致(成功率/距离);**唤醒后首轮距离无系统性偏移**
+      —— 偏移数米 = 天线延时没重下
+- [ ] 报警 LED/蜂鸣器 4Hz 正常(WFI 不影响 TIM2 中断)
+- [ ] 电流计:睡眠窗电流显著下降(DW 深睡 µA 级 + MCU Sleep)
+- [ ] 长跑:correction 收敛、周期不漂,无反复重启(重启 = EXTI0 没恢复,回调不来撞看门狗)
+- [ ] **DW3000 深睡路径本项目首次跑**,单独安排长跑(基站有过 ARFE 静默停收的教训)
+
+#### Phase 1 验证(已通过)
 
 - [ ] **boot log 对账**:标签 RTT 的 `TWR timing:` 与基站逐项一致。**基站侧需先把
       `../Anchor_RTOS/01_Core/App/Src/dw_main.c:434-440` 那段被注释掉的 `log_i` 取消注释**才能对比。

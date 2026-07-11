@@ -41,6 +41,7 @@ file(GLOB COMMON_CORE_SRC_FILES
 set(APP_SRC_FILES
     Core/application/dw_main.c
     Core/application/dw_instance_tag.c
+    Core/application/dw_power.c
 )
 
 # 卡尔曼滤波

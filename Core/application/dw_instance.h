@@ -125,6 +125,10 @@ typedef int32_t  int32;
 #define DW_RX_ON_DELAY                  16      // us，DW 接收机使能到可收数据的开机延时
 #define RX_RESPONSE_TURNAROUND          500     // us，帧间处理翻转余量（双端必须同值，基站实测收紧时一起改）
 
+/* 低功耗（Phase 2）：唤醒提前量。DW1000 port_wakeup_IC_fast() 约 2.2ms（含晶振起振），
+ * 加上唤醒后重下配置的 SPI 时间，取 4ms 余量。SysTick 粒度 1ms，故必须 ≥3。 */
+#define DW_WAKEUP_LEAD_MS               4
+
 #define MAX_POLL_SEND_SLEEP_COUNT       150     //MAX_POLL_SEND_SLEEP_COUNT次发送后无运动则进入休眠
 #define ANC_RANGE_COUNT                 5       //自标定时每个基站测距次数
 
@@ -331,6 +335,15 @@ void tag_app(void);
 void dw_init(void);
 void print_config(void);                     //打印系统参数信息
 extern void set_instance(void);
+
+/* 深睡不保留的芯片配置（天线延时/TX功率/PANID/帧过滤/PA-LNA/中断掩码），
+ * init 与 tag_dw_wakeup() 共用，定义在 dw_main.c */
+void dw_apply_runtime_config(void);
+
+/* DW 深睡 / 唤醒（dw_power.c，DW1000/DW3000 差异已封装） */
+void tag_dw_sleep_config(void);              //init 时调一次
+void tag_dw_entersleep(void);                //本轮测距收尾时入睡
+void tag_dw_wakeup(void);                    //下轮 poll 前 DW_WAKEUP_LEAD_MS 唤醒并重下配置
 
 void tag_rx_ok_cb(const dwt_cb_data_t *cb_data);
 void tag_rx_to_cb(const dwt_cb_data_t *cb_data);
