@@ -21,6 +21,7 @@
 RTE/
 Templates/
 Examples/
+.cache/
  
 !*.uvprojx
 !*.h
