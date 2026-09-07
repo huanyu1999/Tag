@@ -39,8 +39,8 @@ file(GLOB COMMON_CORE_SRC_FILES
 
 # UWB 应用层 —— 仅 TAG 角色；instance_anchor.c 不编译（与 Keil 工程一致）
 set(APP_SRC_FILES
-    Core/Application/dw_main.c
-    Core/Application/instance_tag.c
+    Core/application/dw_main.c
+    Core/application/dw_instance_tag.c
 )
 
 # 卡尔曼滤波
@@ -103,7 +103,7 @@ add_executable(TAG_DW3000.elf
 # 公共头文件目录（不含 DW 厂家驱动 / 平台，那些按目标分别添加）
 set(COMMON_INCLUDE_DIRS
     Core/Inc
-    Core/Application
+    Core/application
     Core/Compiler
     Core/kalmanfilter
     Core/Segger_RTT

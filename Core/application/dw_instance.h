@@ -57,18 +57,18 @@ typedef int32_t  int32;
 #define FCS_LEN          (2)
 #endif
 #elif defined(USE_DW1000)
-#include "../DW1000/platform/port_dw1000.h"
-#include "../DW1000/decadriver/deca_device_api.h"
-#include "../DW1000/decadriver/deca_regs.h"
+#include "../Dw1000/platform/port_dw1000.h"
+#include "../Dw1000/decadriver/deca_device_api.h"
+#include "../Dw1000/decadriver/deca_regs.h"
 #include "../Dw1000/decadriver/deca_types.h"
-#include "../DW1000/platform/deca_spi.h" 
+#include "../Dw1000/platform/deca_spi.h" 
 #else
 // #error "请定义 USE_DW1000 或 USE_DW3000（由 CMake 目标 TAG_DW1000 / TAG_DW3000 提供）"
-#include "../DW3000/platform/port_dw3000.h"
-#include "../DW3000/decadriver/deca_device_api.h"
-#include "../DW3000/decadriver/deca_regs.h"
+#include "../Dw3000/platform/port_dw3000.h"
+#include "../Dw3000/decadriver/deca_device_api.h"
+#include "../Dw3000/decadriver/deca_regs.h"
 #include "../Dw3000/decadriver/deca_types.h"
-#include "../DW3000/platform/deca_spi.h"
+#include "../Dw3000/platform/deca_spi.h"
 #endif
 
 #include "usart.h"
