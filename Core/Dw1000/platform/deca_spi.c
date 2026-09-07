@@ -11,7 +11,7 @@
  * @author DecaWave
  */
 
-#include "instance.h"
+#include "dw_instance.h"
 #include "deca_spi.h"
 #include "deca_device_api.h"
 #include "port_dw1000.h"

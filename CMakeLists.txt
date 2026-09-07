@@ -37,10 +37,11 @@ file(GLOB COMMON_CORE_SRC_FILES
     Core/Src/*.c
 )
 
-# UWB 应用层 —— 仅 TAG 角色；instance_anchor.c 不编译（与 Keil 工程一致）
+# UWB 应用层 —— 仅 TAG 角色；旧副本 instance.h / instance_tag.c 已清理
 set(APP_SRC_FILES
     Core/application/dw_main.c
     Core/application/dw_instance_tag.c
+    Core/application/dw_power.c
 )
 
 # 卡尔曼滤波

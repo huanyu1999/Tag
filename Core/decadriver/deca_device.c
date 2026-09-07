@@ -19,7 +19,7 @@
 #include "deca_device_api.h"
 #include "port.h"
 #include "usart.h"
-#include "instance.h"
+#include "dw_instance.h"
 #include <math.h>
 
 // Defines for enable_clocks function
